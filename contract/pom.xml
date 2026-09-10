@@ -1,6 +1,6 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+		 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 	<!-- http://maven.apache.org/pom.html#Quick_Overview -->
 
@@ -16,7 +16,7 @@
 		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
 		<version.java>22</version.java>
-		
+
 		<version.maven-enforcer-plugin>1.4.1</version.maven-enforcer-plugin>
 		<version.protobuf-maven-plugin>0.6.1</version.protobuf-maven-plugin>
 		<version.maven-compiler-plugin>3.8.1</version.maven-compiler-plugin>
@@ -129,10 +129,12 @@
 				<artifactId>protobuf-maven-plugin</artifactId>
 				<version>${version.protobuf-maven-plugin}</version>
 				<configuration>
-					<protocArtifact>com.google.protobuf:protoc:${version.protoc}:exe:osx-x86_64</protocArtifact>
+					<protocArtifact>com.google.protobuf:protoc:${version.protoc}:exe:linux-x86_64</protocArtifact>
 					<pluginId>grpc-java</pluginId>
-					<pluginArtifact>io.grpc:protoc-gen-grpc-java:${version.grpc}:exe:osx-x86_64</pluginArtifact>
+					<pluginArtifact>io.grpc:protoc-gen-grpc-java:${version.grpc}:exe:linux-x86_64</pluginArtifact>
 				</configuration>
+
+
 				<executions>
 					<execution>
 						<goals>
