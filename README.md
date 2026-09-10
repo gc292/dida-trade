@@ -123,7 +123,6 @@ To support these modules, the project has additional directories:
 First, build the project:
 
 ```bash
-cd /mnt/c/Users/guica/IdeaProjects/DAD2627
 source dev_env/env.sh
 mvn clean install
 ```
@@ -131,7 +130,6 @@ mvn clean install
 ### Server 0
 
 ```bash
-cd /mnt/c/Users/guica/IdeaProjects/DAD2627
 source dev_env/env.sh
 cd server
 mvn exec:java -Dexec.args="9000 0 A"
@@ -140,7 +138,6 @@ mvn exec:java -Dexec.args="9000 0 A"
 ### Server 1
 
 ```bash
-cd /mnt/c/Users/guica/IdeaProjects/DAD2627
 source dev_env/env.sh
 cd server
 mvn exec:java -Dexec.args="9000 1 A"
@@ -149,7 +146,6 @@ mvn exec:java -Dexec.args="9000 1 A"
 ### Server 2
 
 ```bash
-cd /mnt/c/Users/guica/IdeaProjects/DAD2627
 source dev_env/env.sh
 cd server
 mvn exec:java -Dexec.args="9000 2 A"
@@ -158,7 +154,6 @@ mvn exec:java -Dexec.args="9000 2 A"
 ### Client
 
 ```bash
-cd /mnt/c/Users/guica/IdeaProjects/DAD2627
 source dev_env/env.sh
 cd app
 mvn exec:java -Dexec.args="1 localhost 9000 A"
@@ -167,7 +162,6 @@ mvn exec:java -Dexec.args="1 localhost 9000 A"
 ### Console
 
 ```bash
-cd /mnt/c/Users/guica/IdeaProjects/DAD2627
 source dev_env/env.sh
 cd console
 mvn exec:java -Dexec.args="localhost 9000 A"
