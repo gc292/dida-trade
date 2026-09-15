@@ -109,6 +109,7 @@ public class Console {
                     System.out.println("\thelp");
                     System.out.println("\tballot number replica");
 		    System.out.println("\tdebug mode replica");
+                    System.out.println("\tdebug help - explain debug modes");
 		    System.out.println("\texit");
                     break;
                 case "ballot":
@@ -201,11 +202,31 @@ public class Console {
 			System.out.println("usage: activate replica");
                     break;
               case "debug":
+                    if ("help".equalsIgnoreCase(parameter1)) {
+                        System.out.println("usage: debug <mode> <replica>");
+                        System.out.println("  1 = crash: terminate the server");
+                        System.out.println("  2 = freeze: block client/server requests until unfreeze");
+                        System.out.println("  3 = unfreeze: resume blocked requests");
+                        System.out.println("  4 = slow-mode-on: add a random delay to client/server requests");
+                        System.out.println("  5 = slow-mode-off: stop adding delays");
+                        System.out.println("  Console requests remain available during freeze and slow mode.");
+                        System.out.println("  replica = target server ID (0, 1, 2, ...)");
+                        System.out.println("Example: debug 2 0 freezes server 0.");
+                        break;
+                    }
 		    System.out.println("debug " + parameter1 + " " + parameter2);
                     if ((parameter1 != null) && (parameter2 != null)) {
 			try {
 			    mode  =  Integer.parseInt(parameter1);
 			    replica =  Integer.parseInt(parameter2);
+                            if (mode < 1 || mode > 5) {
+                                System.out.println("Invalid debug mode: use 1-5 (see: debug help)");
+                                break;
+                            }
+                            if (replica < 0 || replica >= console_async_stubs.length) {
+                                System.out.println("Invalid replica ID: use 0-" + (console_async_stubs.length - 1));
+                                break;
+                            }
 			    System.out.println("setting debug with mode " + mode + " on replica " + replica);
 
 			    sequence_number = sequence_number+1;
@@ -227,10 +248,10 @@ public class Console {
 			    else
 				System.out.println("no reply received");
 			} catch (NumberFormatException e) {
-                           System.out.println("usage: debug mode replica");
+                           System.out.println("usage: debug mode replica (see: debug help)");
                         }
                     } else {
-                        System.out.println("usage: debug mode replica");
+                        System.out.println("usage: debug mode replica (see: debug help)");
                     }
                     break;
                 case "exit":

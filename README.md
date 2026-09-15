@@ -167,3 +167,21 @@ cd console
 mvn exec:java -Dexec.args="localhost 9000 A"
 ```
   
+
+## Shared code formatting
+
+The root `.editorconfig` defines the team's formatting rules: UTF-8, LF line
+endings, four spaces per indentation level, aligned Java field declarations and
+aligned consecutive assignments. Keep this file in Git so everyone receives the
+same rules when cloning or pulling the repository.
+
+In IntelliJ IDEA, enable **Settings > Editor > Code Style > Enable EditorConfig
+support**. Use **Code > Reformat Code** to format a file or selected code. These
+rules also apply when the project is opened from a parent directory such as `DAD`.
+For automatic formatting, enable **Tools > Actions on Save > Reformat code** in
+your own IDE settings.
+
+The `ij_java_*` alignment settings require IntelliJ IDEA or a compatible JetBrains
+formatter. Other editors may only apply the standard EditorConfig rules. These
+settings control formatting; they do not add lint checks to the Maven build.
+Existing files are reformatted when you explicitly run the formatter.
