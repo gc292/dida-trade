@@ -1,0 +1,30 @@
+# Shared formatting rules. Commit this file with the project.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+tab_width = 4
+trim_trailing_whitespace = true
+
+[*.java]
+ij_java_use_tab_character = false
+ij_java_continuation_indent_size = 8
+
+# Preserve the project's column-aligned fields and assignments.
+ij_java_align_group_field_declarations = true
+ij_java_align_consecutive_variable_declarations = true
+ij_java_align_consecutive_assignments = true
+
+# Opening braces stay on the declaration/statement line.
+ij_java_class_brace_style = end_of_line
+ij_java_method_brace_style = end_of_line
+ij_java_block_brace_style = end_of_line
+ij_java_keep_line_breaks = true
+
+[*.md]
+# Markdown uses trailing spaces for explicit line breaks.
+trim_trailing_whitespace = false
