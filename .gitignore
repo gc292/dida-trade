@@ -95,3 +95,7 @@ $RECYCLE.BIN/
 # =========================
 **/generated-sources/
 **/generated-test-sources/
+
+# Local Codex context
+AGENTS.md
+PROJECT_CONTEXT.md
