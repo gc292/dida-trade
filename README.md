@@ -40,6 +40,7 @@ DIDA-Trade/
 ├── core/       # Trading domain and state machine logic
 ├── server/     # Replicas and Paxos implementation
 ├── util/       # Shared utilities and RPC response processing
+├── scripts/    # Linux/WSL setup and launch scripts
 ├── dev_env/    # Development environment
 └── Docs/       # Project documentation and specification
 ```
@@ -83,6 +84,32 @@ The `contract` module depends on platform-specific Protocol Buffers and gRPC exe
 The repository provides configurations for the supported development environments. Make sure that `contract/pom.xml` references binaries compatible with your operating system and CPU architecture before compiling.
 
 The current development configuration targets **Linux x86-64**.
+
+## Helper Scripts (Linux / WSL)
+
+From the repository root, install the development tools if needed:
+
+```bash
+bash scripts/setup_env.sh
+```
+
+The tools are installed into the repository's `dev_env/` directory. Both scripts
+resolve paths relative to their own location, regardless of the current directory.
+On Windows, run them inside WSL; they are also usable directly on Linux.
+
+Build and start each component in a separate terminal:
+
+```bash
+bash scripts/run.sh build
+bash scripts/run.sh s0
+bash scripts/run.sh s1
+bash scripts/run.sh s2
+bash scripts/run.sh cliente
+bash scripts/run.sh consola
+```
+
+The launcher loads `dev_env/env.sh` automatically and uses Schedule A, base port
+9000, and client ID 1. Each command runs in the current terminal.
 
 ## Running the System
 

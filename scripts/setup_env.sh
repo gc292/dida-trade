@@ -10,7 +10,8 @@ JAVA_RELEASE=22
 JAVA_VERSION="22.0.2"
 MAVEN_VERSION=3.8.4
 PROTOC_VERSION=3.12.0
-INSTALL_DIR="$(pwd)/dev_env"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTALL_DIR="$ROOT/dev_env"
 
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
