@@ -12,7 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-public class MainLoop implements Runnable {
+public class MainLoop implements ConsensusLoop {
     DidaTradeServerState server_state;
 
     private boolean                                               has_work;
@@ -68,29 +68,8 @@ public class MainLoop implements Runnable {
 
 
                 // send phase1
-                DidaTradePaxos.PhaseOneRequest.Builder phase_one_request_builder = DidaTradePaxos.PhaseOneRequest.newBuilder();
-                phase_one_request_builder.setInstance(entry_number);
-                phase_one_request_builder.setRequestballot(ballot);
-
-                DidaTradePaxos.PhaseOneRequest phase_one_request = phase_one_request_builder.build();
-                System.out.println("Going to send phase 1" + phase_one_request);
-
-                int low_ballot  = Math.max(completed_ballot, 0);
-                int high_ballot = ballot;
-
-
-                PhaseOneResponseProcessor phase_one_processor = new PhaseOneResponseProcessor(this.server_state.scheduler, low_ballot, high_ballot);
-                
-                ArrayList<DidaTradePaxos.PhaseOneReply>                phase_one_responses = new ArrayList<DidaTradePaxos.PhaseOneReply>();
-                GenericResponseCollector<DidaTradePaxos.PhaseOneReply> phase_one_collector = new GenericResponseCollector<DidaTradePaxos.PhaseOneReply>(phase_one_responses, n_acceptors, phase_one_processor);
-
-                for (int i = 0; i < n_acceptors; i++) {
-                    CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> phase_one_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseOneReply>(phase_one_collector);
-                    this.server_state.async_stubs[acceptors.get(i)].phaseone(phase_one_request, phase_one_observer);
-                }
-
-
-                phase_one_collector.waitUntilDone();
+                PhaseOneResponseProcessor phase_one_processor =
+                        this.server_state.runPhaseOne(entry_number, ballot, completed_ballot);
                 if (phase_one_processor.getAccepted() == false) {
                     ballot_aborted = true;
                     int maxballot = phase_one_processor.getMaxballot();
@@ -167,44 +146,6 @@ public class MainLoop implements Runnable {
         // exec request in entry
         // System.out.println("Going to process command with id = " + next_entry.command_id);
 
-        DidaTradeCommand command = request_record.getRequest();
-        boolean          result  = false;
-        int              balance = 0;
-
-        DidaTradeAction action = command.getAction();
-
-        // System.out.println("Action  = " + action);
-        switch (action) {
-            case DidaTradeAction.POPULATE:
-                result = this.server_state.trade_manager.populate(command.getQuantity());
-                break;
-            case DidaTradeAction.ADDUSER:
-                result = this.server_state.trade_manager.add_user(command.getUserId(), command.getQuantity(), command.getStock());
-                break;
-            case DidaTradeAction.SELL:
-                result = this.server_state.trade_manager.sell(command.getUserId(), command.getQuantity());
-                break;
-            case DidaTradeAction.BUY:
-                result = this.server_state.trade_manager.acquire(command.getUserId(), command.getQuantity());
-                break;
-            case DidaTradeAction.BALANCE:
-                balance = this.server_state.trade_manager.balance(command.getUserId());
-                command.setQuantity(balance);
-                result = (balance != -1);
-                break;
-            case DidaTradeAction.DUMP:
-                this.server_state.trade_manager.dump();
-                result = true;
-                break;
-            default:
-                result = false;
-                System.err.println("*** Unknown command ****");
-                break;
-        }
-
-        // sending response
-        System.out.println("Setting response for command with id = " + next_entry.command_id + " with result = " + result);
-        request_record.setResponse(result);
-        this.server_state.req_history.moveToProcessed(request_record.getId());
+        this.server_state.executeRequest(request_record);
     }
 }
