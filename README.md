@@ -1,124 +1,188 @@
-# DAD2627
+# DIDA Trade
 
-DAD 26-27 Project
+Project developed for the **Distributed Applications Development (DAD)** course, 2026/2027.
 
-This repository holds the base code required to implement the project. Students are free to improve on the following
-code.
-Students should create a copy of this repository by clicking on `Use This Template` on the project GitHub page.
+DIDA Trade is a distributed trading system implemented in **Java** and **gRPC**. The project explores state machine replication and consensus protocols based on **Paxos**, progressively extending the baseline implementation with Multi-Paxos, Fast Paxos, causal operations, and dynamic membership.
 
-# ⚠️ **WARNING:** ⚠️
+## Requirements
 
-Students must **NOT** develop their solution on a Fork of the repository.
-Forks are public and your code **WILL** be visible to other students.
+The development environment uses:
 
-It falls onto the students to **NOT DEVELOP ON A FORK THE PROJECT**
+* Java 22
+* Maven 3.8.4
+* Protocol Buffers Compiler (`protoc`) 3.12.0
+* gRPC Java
 
-# Requirements
+The repository includes a development environment under:
 
-The project requires the following packages (you are free to use other versions of java):
+```text
+dev_env/
+```
 
-- Java 22
-- Maven 3.8.4
-- Protoc 3.12
+Load it from the repository root before compiling or running the project:
 
-## Environment
+```bash
+source dev_env/env.sh
+```
 
-The project includes a template `setup_env.sh` which students may use as basis to download all necessary packages for
-the project execution.
-The current script was designed for Linux/Ubuntu distributions on an Intel x86 environments.
-Students may extend this script for their target distribution/CPU architecture.
+> The provided environment is configured for Linux x86-64. Paths and platform-specific dependencies may need to be adjusted when running on another operating system or CPU architecture.
 
-If so, it will keep all required packages in `INSTALL_DIR`, which can be activated by running
-`source INSTALL_DIR/env.sh`.
+## Project Structure
 
-# Compiling
+The project is organized as a multi-module Maven project:
 
-To compile the project, students must run the command
-`mvn clean install` in the root directory
+```text
+DIDA-Trade/
+├── app/        # Transaction client
+├── configs/    # Replica configurations and schedules
+├── console/    # Administrative console
+├── contract/   # Protocol Buffer and gRPC contracts
+├── core/       # Trading domain and state machine logic
+├── server/     # Replicas and Paxos implementation
+├── util/       # Shared utilities and RPC response processing
+├── dev_env/    # Development environment
+└── Docs/       # Project documentation and specification
+```
 
-## ⚠️ ️**WARNING - Compilation Environment** ⚠️
+### Main Components
 
-The project requires different `pom.xml` for the *contract* module depending on the CPU architecture/OS distribution.
-The project currently has two pre-pepared poms:
+**Server**
 
-- One for **ARM/M4 Mac-OS** based systems, named `arm-pom.xml`;
-- One for **Intel/Linux** based systems, named `intel-pom.xml`;
+Runs a replica of the distributed trading system. Replicas participate in the consensus protocol and execute decided operations against their local state.
 
-Before the first compilation, copy your required contract pom and rename it to `pom.xml`.
+**App**
 
-# Deployment
+Interactive client used to submit trading operations to the replicated system.
 
-Current implementation assumes that all modules run on the same physical machine and requires 5 active servers.
+**Console**
 
-The project is composed of three main components:
+Administrative interface used to control replicas, initiate ballots, activate replicas, and enable debugging behavior.
 
-- Servers
-- App (Clients)
-- Console
+### Supporting Modules
 
-## Servers
+* `contract` — `.proto` definitions and generated Java/gRPC interfaces.
+* `configs` — replica membership, leaders, quorums, ballots, and configuration schedules.
+* `core` — users, balances, stocks, orders, and trade matching.
+* `util` — common utilities and asynchronous RPC response processing.
 
-The servers run the base implementation. They are executed running the following command in the *server* directory:
+## Building
 
-`mvn exec:java -Dexec.args="{port} {id} {scheduler}"`
+From the repository root:
 
-Where you must fill in the following arguments:
+```bash
+source dev_env/env.sh
+mvn clean install
+```
 
-- **{port}**: Base port of all servers. **All servers should use the same port**. The Server binded port will be  *
-  *{port} + {id}**.
-- **{id}**: Sequential id of the server. Current implementation requires servers to be ID'ed starting from *0* to *N-1*
-  servers.
-- **{scheduler}**: The scheduler used for reconfiguration (use 'A' to start)
+This builds the complete multi-module project and generates the required Protocol Buffers and gRPC classes.
 
-## Client
+### Platform-specific protobuf configuration
 
-A client that executes transactions. It is executed by running the following command in the *app* directory:
+The `contract` module depends on platform-specific Protocol Buffers and gRPC executables.
 
-`mvn exec:java -Dexec.args="{id} {host} {port} {scheduler}"`
+The repository provides configurations for the supported development environments. Make sure that `contract/pom.xml` references binaries compatible with your operating system and CPU architecture before compiling.
 
-Where you must fill in the following arguments:
+The current development configuration targets **Linux x86-64**.
 
-- **{id}**: Sequential id of the client. Current implementation requires clients to be ID'ed starting from *1*.
-- **{host}**: The host for all servers. (just use "localhost")
-- **{port}**: Base port of all servers.
-- **{scheduler}**: The scheduler used (use 'A' to start)
+## Running the System
 
-The client module opens a terminal from where students may issue commands. The following commands are available:
+The current deployment assumes that all components run on the same physical machine.
 
-- `help` - Shows the full command list;
-- `exit` - Gracefully finishes the client.
+With **Schedule A**, the system consists of three replicas.
 
-## Console
+Start the servers before starting clients.
 
-The console client servers as a front-end to issue configuration settings to servers. It is executed by running the
-following command in the *consoleclient* directory:
+### Servers
 
-`mvn exec:java -Dexec.args="{host} {port} {scheduler}"`
+From the `server/` directory:
 
-here you must fill in the following arguments:
+```bash
+mvn exec:java -Dexec.args="{port} {id} {scheduler}"
+```
 
-- **{host}**: The host for all servers. (just use "localhost")
-- **{port}**: Base port of all servers.
-- **{scheduler}**: The scheduler used (use 'A' to start)
+Arguments:
 
-The console client opens a terminal from where students may issue configuration changes to servers. The following
-commands are available:
+* `{port}` — base port shared by all replicas.
+* `{id}` — replica identifier, starting at `0`.
+* `{scheduler}` — configuration schedule (`A` for the initial configuration).
 
-- `help` - Shows the full command list;
-- `ballot ballot_number server` - Instructs a server to start ballot with number 'ballot_number';
-- `debug mode replica_id` - Activates debug on a given replica;
-- `exit` - Gracefully finishes the console.
+The actual port used by a replica is:
 
-## Protobuffs and Utils
+```text
+port + id
+```
 
-To support these modules, the project has additional directories:
+For example, using base port `9000`:
 
-- *contract*, holding the required `.proto` files;
-- *util*, holding the general classes to collect RPC responses
-- *core*, holding the general classes that manage meetings
-- *configs*, holding the general classes that manage configurations
+```text
+Replica 0 -> 9000
+Replica 1 -> 9001
+Replica 2 -> 9002
+```
 
-## How to Run
+### Client
+
+From the `app/` directory:
+
+```bash
+mvn exec:java -Dexec.args="{id} {host} {port} {scheduler}"
+```
+
+Arguments:
+
+* `{id}` — client identifier, starting at `1`.
+* `{host}` — host where the replicas are running (`localhost` for local execution).
+* `{port}` — base replica port.
+* `{scheduler}` — configuration schedule.
+
+The client provides an interactive terminal for issuing operations against the trading system.
+
+Use:
+
+```text
+help
+```
+
+to display the available commands.
+
+Use:
+
+```text
+exit
+```
+
+to terminate the client gracefully.
+
+### Console
+
+From the `console/` directory:
+
+```bash
+mvn exec:java -Dexec.args="{host} {port} {scheduler}"
+```
+
+Arguments:
+
+* `{host}` — host where the replicas are running.
+* `{port}` — base replica port.
+* `{scheduler}` — configuration schedule.
+
+The console provides administrative commands for controlling the distributed system.
+
+Examples include:
+
+```text
+help
+ballot <ballot_number> <server>
+debug <mode> <replica_id>
+exit
+```
+
+Use `help` for the complete list of commands supported by the current implementation.
+
+## Quick Start
+
+The following example starts a complete local deployment using **Schedule A** and base port `9000`.
 
 First, build the project:
 
@@ -126,6 +190,8 @@ First, build the project:
 source dev_env/env.sh
 mvn clean install
 ```
+
+Then open separate terminals for each component.
 
 ### Server 0
 
@@ -166,22 +232,63 @@ source dev_env/env.sh
 cd console
 mvn exec:java -Dexec.args="localhost 9000 A"
 ```
-  
 
-## Shared code formatting
+## Debugging
 
-The root `.editorconfig` defines the team's formatting rules: UTF-8, LF line
-endings, four spaces per indentation level, aligned Java field declarations and
-aligned consecutive assignments. Keep this file in Git so everyone receives the
-same rules when cloning or pulling the repository.
+The console can configure debugging behavior on individual replicas using:
 
-In IntelliJ IDEA, enable **Settings > Editor > Code Style > Enable EditorConfig
-support**. Use **Code > Reformat Code** to format a file or selected code. These
-rules also apply when the project is opened from a parent directory such as `DAD`.
-For automatic formatting, enable **Tools > Actions on Save > Reformat code** in
-your own IDE settings.
+```text
+debug <mode> <replica_id>
+```
 
-The `ij_java_*` alignment settings require IntelliJ IDEA or a compatible JetBrains
-formatter. Other editors may only apply the standard EditorConfig rules. These
-settings control formatting; they do not add lint checks to the Maven build.
-Existing files are reformatted when you explicitly run the formatter.
+The currently implemented modes are:
+
+| Mode | Behavior                 |
+| ---: | ------------------------ |
+|  `1` | Crash replica            |
+|  `2` | Freeze replica           |
+|  `3` | Unfreeze replica         |
+|  `4` | Enable artificial delay  |
+|  `5` | Disable artificial delay |
+
+Artificial delay introduces a random delay between **100 ms and 1000 ms** when processing requests.
+
+These modes are useful for testing the behavior of the distributed protocol under replica failures, delayed communication, and partial availability.
+
+## Code Formatting
+
+The root `.editorconfig` defines the formatting rules shared by the team.
+
+Among other settings, it defines:
+
+* UTF-8 encoding
+* LF line endings
+* Four spaces per indentation level
+* Java field alignment
+* Consecutive assignment alignment
+
+The `.editorconfig` file should remain version-controlled so that all contributors use the same formatting rules.
+
+### IntelliJ IDEA
+
+Enable EditorConfig support under:
+
+```text
+Settings > Editor > Code Style > Enable EditorConfig support
+```
+
+To format code manually:
+
+```text
+Code > Reformat Code
+```
+
+Automatic formatting on save can optionally be enabled under:
+
+```text
+Tools > Actions on Save > Reformat code
+```
+
+Some `ij_java_*` options are specific to IntelliJ IDEA or compatible JetBrains formatters. Other editors may only apply the standard EditorConfig properties.
+
+Formatting rules affect source-code formatting only; they do not introduce additional linting or Maven validation.
