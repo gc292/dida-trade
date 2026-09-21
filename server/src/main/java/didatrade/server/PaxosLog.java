@@ -1,6 +1,8 @@
 package didatrade.server;
 
+import java.util.ArrayList;
 import java.util.Hashtable;
+import java.util.List;
 
 
 public class PaxosLog {
@@ -39,4 +41,9 @@ public class PaxosLog {
         }
         return entry;
     }
+
+    public synchronized List<PaxosInstance> getEntries() {
+        return new ArrayList<>(this.log.values());
+    }
+
 }

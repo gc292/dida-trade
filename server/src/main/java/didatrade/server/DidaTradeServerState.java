@@ -1,5 +1,10 @@
 package didatrade.server;
 
+import java.util.ArrayList;
+import didatrade.util.PhaseOneResponseProcessor;
+import didatrade.util.GenericResponseCollector;
+import didatrade.util.CollectorStreamObserver;
+import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
 import didatrade.configs.ConfigurationScheduler;
 import didatrade.core.TradeManager;
@@ -35,10 +40,10 @@ public class DidaTradeServerState {
     private volatile boolean slowMode;
     private          boolean frozen;
 
-    MainLoop main_loop;
-    Thread   main_loop_worker;
+    ConsensusLoop main_loop;
+    Thread        main_loop_worker;
 
-    public DidaTradeServerState(int port, int myself, char schedule) {
+    public DidaTradeServerState(int port, int myself, char schedule, ProtocolMode protocol) {
         this.trade_manager    = new TradeManager();
         this.scheduler        = new ConfigurationScheduler(schedule);
         this.base_port        = port;
@@ -49,9 +54,13 @@ public class DidaTradeServerState {
         this.completed_ballot = -1;
         this.req_history      = new RequestHistory();
         this.paxos_log        = new PaxosLog();
-        this.main_loop        = new MainLoop(this);
         this.slowMode         = false;
         this.frozen           = false;
+
+        this.main_loop = switch (protocol) {
+            case CLASSIC -> new MainLoop(this);
+            case MULTI -> throw new UnsupportedOperationException("Multi-Paxos ainda não está implementado.");
+        };
 
         // populate manager
         this.trade_manager.populate(DEFAULT_POPULATION);
@@ -79,6 +88,79 @@ public class DidaTradeServerState {
         // start worker
         this.main_loop_worker = new Thread(main_loop);
         this.main_loop_worker.start();
+    }
+
+    public PhaseOneResponseProcessor runPhaseOne(
+            int entry_number, int ballot, int completed_ballot) {
+        List<Integer> acceptors = this.scheduler.acceptors(ballot);
+        int n_acceptors = acceptors.size();
+
+        DidaTradePaxos.PhaseOneRequest.Builder phase_one_request_builder = DidaTradePaxos.PhaseOneRequest.newBuilder();
+        phase_one_request_builder.setInstance(entry_number);
+        phase_one_request_builder.setRequestballot(ballot);
+
+        DidaTradePaxos.PhaseOneRequest phase_one_request = phase_one_request_builder.build();
+        System.out.println("Going to send phase 1" + phase_one_request);
+
+        int low_ballot  = Math.max(completed_ballot, 0);
+        int high_ballot = ballot;
+
+
+        PhaseOneResponseProcessor phase_one_processor = new PhaseOneResponseProcessor(this.scheduler, low_ballot, high_ballot);
+
+        ArrayList<DidaTradePaxos.PhaseOneReply>                phase_one_responses = new ArrayList<DidaTradePaxos.PhaseOneReply>();
+        GenericResponseCollector<DidaTradePaxos.PhaseOneReply> phase_one_collector = new GenericResponseCollector<DidaTradePaxos.PhaseOneReply>(phase_one_responses, n_acceptors, phase_one_processor);
+
+        for (int i = 0; i < n_acceptors; i++) {
+            CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> phase_one_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseOneReply>(phase_one_collector);
+            this.async_stubs[acceptors.get(i)].phaseone(phase_one_request, phase_one_observer);
+        }
+
+
+        phase_one_collector.waitUntilDone();
+        return phase_one_processor;
+    }
+
+    public void executeRequest(RequestRecord request_record) {
+        DidaTradeCommand command = request_record.getRequest();
+        boolean          result  = false;
+        int              balance = 0;
+
+        DidaTradeAction action = command.getAction();
+
+        // System.out.println("Action  = " + action);
+        switch (action) {
+            case DidaTradeAction.POPULATE:
+                result = this.trade_manager.populate(command.getQuantity());
+                break;
+            case DidaTradeAction.ADDUSER:
+                result = this.trade_manager.add_user(command.getUserId(), command.getQuantity(), command.getStock());
+                break;
+            case DidaTradeAction.SELL:
+                result = this.trade_manager.sell(command.getUserId(), command.getQuantity());
+                break;
+            case DidaTradeAction.BUY:
+                result = this.trade_manager.acquire(command.getUserId(), command.getQuantity());
+                break;
+            case DidaTradeAction.BALANCE:
+                balance = this.trade_manager.balance(command.getUserId());
+                command.setQuantity(balance);
+                result = (balance != -1);
+                break;
+            case DidaTradeAction.DUMP:
+                this.trade_manager.dump();
+                result = true;
+                break;
+            default:
+                result = false;
+                System.err.println("*** Unknown command ****");
+                break;
+        }
+
+        // sending response
+        System.out.println("Setting response for command with id = " + request_record.getId() + " with result = " + result);
+        request_record.setResponse(result);
+        this.req_history.moveToProcessed(request_record.getId());
     }
 
     public synchronized int getCurrentBallot() {

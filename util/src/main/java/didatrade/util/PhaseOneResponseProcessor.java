@@ -3,19 +3,19 @@ package didatrade.util;
 import didatrade.DidaTradePaxos;
 import didatrade.configs.ConfigurationScheduler;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 
 public class PhaseOneResponseProcessor extends GenericResponseProcessor<DidaTradePaxos.PhaseOneReply> {
-    private ConfigurationScheduler scheduler;
-    private boolean                accepted;
-    private int                    value;
-    private int                    valballot;
-    private int                    maxballot;
-    private int                    low_ballot;
-    private int                    high_ballot;
-    private Set<Integer>           acceptedReplicas = new HashSet<>();
+    private       ConfigurationScheduler                     scheduler;
+    private       boolean                                    accepted;
+    private       int                                        value;
+    private       int                                        valballot;
+    private       int                                        maxballot;
+    private       int                                        low_ballot;
+    private       int                                        high_ballot;
+    private       Set<Integer>                               acceptedReplicas = new HashSet<>();
+    private final Map<Integer, DidaTradePaxos.AcceptedEntry> recoveredEntries = new HashMap<>();
+
 
     public PhaseOneResponseProcessor(ConfigurationScheduler s, int l, int h) {
         this.accepted    = false;
@@ -43,6 +43,10 @@ public class PhaseOneResponseProcessor extends GenericResponseProcessor<DidaTrad
         return this.maxballot;
     }
 
+    public synchronized Map<Integer, DidaTradePaxos.AcceptedEntry> getRecoveredEntries() {
+        return new HashMap<>(this.recoveredEntries);
+    }
+
     @Override
     public synchronized boolean onNext(ArrayList<DidaTradePaxos.PhaseOneReply> all_responses, DidaTradePaxos.PhaseOneReply last_response) {
         this.maxballot = Math.max(this.maxballot, last_response.getMaxballot());
@@ -54,6 +58,14 @@ public class PhaseOneResponseProcessor extends GenericResponseProcessor<DidaTrad
         }
 
         this.acceptedReplicas.add(last_response.getServerid());
+
+        for (DidaTradePaxos.AcceptedEntry entry : last_response.getAcceptedEntriesList()) {
+            DidaTradePaxos.AcceptedEntry previous = recoveredEntries.get(entry.getInstance());
+
+            if (previous == null || entry.getValballot() > previous.getValballot()) {
+                recoveredEntries.put(entry.getInstance(), entry);
+            }
+        }
 
         // Preserve the value accepted in the highest previous ballot.
         if (last_response.getValballot() > this.valballot) {

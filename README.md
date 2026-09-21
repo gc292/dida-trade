@@ -124,7 +124,7 @@ Start the servers before starting clients.
 From the `server/` directory:
 
 ```bash
-mvn exec:java -Dexec.args="{port} {id} {scheduler}"
+mvn exec:java -Dexec.args="{port} {id} {scheduler} [classic|multi]"
 ```
 
 Arguments:
@@ -132,6 +132,15 @@ Arguments:
 * `{port}` — base port shared by all replicas.
 * `{id}` — replica identifier, starting at `0`.
 * `{scheduler}` — configuration schedule (`A` for the initial configuration).
+* Protocol mode is optional and defaults to `classic`; it is independent of the schedule.
+
+Step 2 is in progress: `classic` runs the existing per-instance Paxos loop.
+`multi` currently exits with an explicit unsupported-operation error; the Multi-Paxos
+loop and pipeline are not implemented yet. Phase 1 replies now include accepted
+entries per log position, and shared Phase 1/command execution helpers are available.
+The Classic path retains its scalar Phase 1 selection, but replies carry additional data.
+Existing `scripts/run.sh s0`, `s1`, and `s2` commands still select Classic with Schedule A.
+
 
 The actual port used by a replica is:
 
