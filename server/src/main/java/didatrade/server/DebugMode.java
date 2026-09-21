@@ -1,6 +1,8 @@
 package didatrade.server;
 
-/** Explicit codes used by the console's debug <mode> <replica> command. */
+/**
+ * Explicit codes used by the console's debug <mode> <replica> command.
+ */
 public enum DebugMode {
     CRASH(1),
     FREEZE(2),
