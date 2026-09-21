@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    echo "Uso: bash run.sh {s0|s1|s2|cliente|consola|build}"
-    echo "Executa cada processo numa aba WSL do terminal do IntelliJ."
+    echo "Uso: bash scripts/run.sh {s0|s1|s2|cliente|consola|build}"
+    echo "Executa um processo no terminal atual (Linux ou WSL)."
 }
 
 if [[ $# -ne 1 ]]; then
