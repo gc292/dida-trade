@@ -12,7 +12,7 @@ public class PhaseTwoResponseProcessor extends GenericResponseProcessor<DidaTrad
     private int     responses;
 
     public PhaseTwoResponseProcessor(int q) {
-        this.accepted  = true;
+        this.accepted  = false;
         this.maxballot = 0;
         this.quorum    = q;
         this.responses = 0;
@@ -33,8 +33,10 @@ public class PhaseTwoResponseProcessor extends GenericResponseProcessor<DidaTrad
             if (last_response.getMaxballot() > this.maxballot)
                 this.maxballot = last_response.getMaxballot();
             return true;
-        } else if (responses >= quorum)
+        } else if (responses >= quorum) {
+            this.accepted = true;
             return true;
+        }
         else
             return false;
     }
