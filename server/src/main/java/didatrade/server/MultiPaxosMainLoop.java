@@ -19,14 +19,20 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
 
     @Override
     public void run() {
-        while (true) {
+        while (!Thread.currentThread().isInterrupted()) {
+            int ballot = server_state.getCurrentBallot();
+            if (server_state.scheduler.leader(ballot) == server_state.my_id && prepared_ballot != ballot) {
+                boolean prepared = prepareLeadership(ballot);
+                if (!prepared && server_state.getCurrentBallot() != ballot) {
+                    continue;
+                }
+            }
             synchronized (this) {
-                while (!has_work) {
+                while (!has_work && !Thread.currentThread().isInterrupted()){
                     try {
                         wait();
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
-                        return;
                     }
                 }
                 has_work = false;
@@ -37,8 +43,8 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
 
     @Override
     public synchronized void wakeup() {
-        this.has_work = true;
-        notify();
+        has_work = true;
+        notifyAll();
     }
 
     private boolean prepareLeadership(int ballot) {
