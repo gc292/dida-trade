@@ -9,6 +9,7 @@ import java.util.Map;
 public class MultiPaxosMainLoop implements ConsensusLoop {
     private final DidaTradeServerState                       server_state;
     private       int                                        prepared_ballot  = -1;
+    private       boolean                                    has_work;
     private       Map<Integer, DidaTradePaxos.AcceptedEntry> recoveredEntries = new HashMap<>();
 
 
@@ -18,12 +19,26 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
 
     @Override
     public void run() {
-        throw new UnsupportedOperationException("not yet implemented");
+        while (true) {
+            synchronized (this) {
+                while (!has_work) {
+                    try {
+                        wait();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                has_work = false;
+            } 
+
+        }
     }
 
     @Override
-    public void wakeup() {
-
+    public synchronized void wakeup() {
+        this.has_work = true;
+        notify();
     }
 
     private boolean prepareLeadership(int ballot) {
