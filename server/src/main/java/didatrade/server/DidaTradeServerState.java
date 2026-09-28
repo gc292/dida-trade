@@ -1,7 +1,9 @@
 package didatrade.server;
 
 import java.util.ArrayList;
+
 import didatrade.util.PhaseOneResponseProcessor;
+import didatrade.util.PhaseTwoResponseProcessor;
 import didatrade.util.GenericResponseCollector;
 import didatrade.util.CollectorStreamObserver;
 import didatrade.DidaTradePaxos;
@@ -92,8 +94,8 @@ public class DidaTradeServerState {
 
     public PhaseOneResponseProcessor runPhaseOne(
             int entry_number, int ballot, int completed_ballot) {
-        List<Integer> acceptors = this.scheduler.acceptors(ballot);
-        int n_acceptors = acceptors.size();
+        List<Integer> acceptors   = this.scheduler.acceptors(ballot);
+        int           n_acceptors = acceptors.size();
 
         DidaTradePaxos.PhaseOneRequest.Builder phase_one_request_builder = DidaTradePaxos.PhaseOneRequest.newBuilder();
         phase_one_request_builder.setInstance(entry_number);
@@ -119,6 +121,32 @@ public class DidaTradeServerState {
 
         phase_one_collector.waitUntilDone();
         return phase_one_processor;
+    }
+
+    public PhaseTwoResponseProcessor runPhaseTwo(int instance, int ballot, int value) {
+        List<Integer> acceptors   = this.scheduler.acceptors(ballot);
+        int           quorum      = this.scheduler.quorum(ballot);
+        int           n_acceptors = acceptors.size();
+
+        DidaTradePaxos.PhaseTwoRequest.Builder phase_two_request = DidaTradePaxos.PhaseTwoRequest.newBuilder();
+        phase_two_request.setInstance(instance);
+        phase_two_request.setRequestballot(ballot);
+        phase_two_request.setValue(value);
+
+
+        PhaseTwoResponseProcessor phase_two_processor = new PhaseTwoResponseProcessor(quorum);
+
+        System.out.println("Calling peers with phase_two_request = " + phase_two_request);
+        ArrayList<DidaTradePaxos.PhaseTwoReply>                phase_two_responses = new ArrayList<DidaTradePaxos.PhaseTwoReply>();
+        GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> phase_two_collector = new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(phase_two_responses, n_acceptors, phase_two_processor);
+        for (int i = 0; i < n_acceptors; i++) {
+            CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> phase_two_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply>(phase_two_collector);
+            this.async_stubs[acceptors.get(i)].phasetwo(phase_two_request.build(), phase_two_observer);
+        }
+
+        System.out.println("Waiting for responses...");
+        phase_two_collector.waitUntilDone();
+        return phase_two_processor;
     }
 
     public void executeRequest(RequestRecord request_record) {

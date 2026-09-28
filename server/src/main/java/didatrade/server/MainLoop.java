@@ -1,14 +1,10 @@
 package didatrade.server;
 
-import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
-import didatrade.util.CollectorStreamObserver;
-import didatrade.util.GenericResponseCollector;
 import didatrade.util.PhaseOneResponseProcessor;
 import didatrade.util.PhaseTwoResponseProcessor;
 import io.grpc.ManagedChannel;
 
-import java.util.ArrayList;
 import java.util.List;
 
 
@@ -52,10 +48,6 @@ public class MainLoop implements ConsensusLoop {
             int           ballot           = this.server_state.getCurrentBallot();
             int           completed_ballot = this.server_state.getCompletedBallot();
 
-            List<Integer> acceptors   = this.server_state.scheduler.acceptors(ballot);
-            int           quorum      = this.server_state.scheduler.quorum(ballot);
-            int           n_acceptors = acceptors.size();
-
             if ((ballot > -1) && (request_record != null) && (this.server_state.scheduler.leader(ballot) == this.server_state.my_id)) {
 
                 System.out.println("I am the leader for request with id " + request_record.getId());
@@ -85,24 +77,8 @@ public class MainLoop implements ConsensusLoop {
                     System.out.println("Going to run paxos phase 2");
 
                     // send phase2
-                    DidaTradePaxos.PhaseTwoRequest.Builder phase_two_request = DidaTradePaxos.PhaseTwoRequest.newBuilder();
-                    phase_two_request.setInstance(entry_number);
-                    phase_two_request.setRequestballot(ballot);
-                    phase_two_request.setValue(phase_two_value);
-
-
-                    PhaseTwoResponseProcessor phase_two_processor = new PhaseTwoResponseProcessor(quorum);
-
-                    System.out.println("Calling peers with phase_two_request = " + phase_two_request);
-                    ArrayList<DidaTradePaxos.PhaseTwoReply>                phase_two_responses = new ArrayList<DidaTradePaxos.PhaseTwoReply>();
-                    GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> phase_two_collector = new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(phase_two_responses, n_acceptors, phase_two_processor);
-                    for (int i = 0; i < n_acceptors; i++) {
-                        CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> phase_two_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply>(phase_two_collector);
-                        this.server_state.async_stubs[acceptors.get(i)].phasetwo(phase_two_request.build(), phase_two_observer);
-                    }
-
-                    System.out.println("Waiting for responses...");
-                    phase_two_collector.waitUntilDone();
+                    PhaseTwoResponseProcessor phase_two_processor =
+                            this.server_state.runPhaseTwo(entry_number, ballot, phase_two_value);
                     if (phase_two_processor.getAccepted() == false) {
                         ballot_aborted = true;
                         this.server_state.setCurrentBallot(phase_two_processor.getMaxballot());
