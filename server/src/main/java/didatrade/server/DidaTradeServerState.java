@@ -59,7 +59,7 @@ public class DidaTradeServerState {
 
         this.main_loop = switch (protocol) {
             case CLASSIC -> new MainLoop(this);
-            case MULTI -> throw new UnsupportedOperationException("Multi-Paxos ainda não está implementado.");
+            case MULTI -> new MultiPaxosMainLoop(this);
         };
 
         // populate manager
