@@ -4,6 +4,7 @@ import java.util.ArrayList;
 
 import didatrade.util.PhaseOneResponseProcessor;
 import didatrade.util.PhaseTwoResponseProcessor;
+import didatrade.util.PhaseTwoAttempt;
 import didatrade.util.GenericResponseCollector;
 import didatrade.util.CollectorStreamObserver;
 import didatrade.DidaTradePaxos;
@@ -124,6 +125,12 @@ public class DidaTradeServerState {
     }
 
     public PhaseTwoResponseProcessor runPhaseTwo(int instance, int ballot, int value) {
+        PhaseTwoAttempt attempt = startPhaseTwo(instance, ballot, value);
+        System.out.println("Waiting for responses...");
+        return attempt.waitUntilDone();
+    }
+
+    public PhaseTwoAttempt startPhaseTwo(int instance, int ballot, int value) {
         List<Integer> acceptors   = this.scheduler.acceptors(ballot);
         int           quorum      = this.scheduler.quorum(ballot);
         int           n_acceptors = acceptors.size();
@@ -144,9 +151,7 @@ public class DidaTradeServerState {
             this.async_stubs[acceptors.get(i)].phasetwo(phase_two_request.build(), phase_two_observer);
         }
 
-        System.out.println("Waiting for responses...");
-        phase_two_collector.waitUntilDone();
-        return phase_two_processor;
+        return new PhaseTwoAttempt(phase_two_collector, phase_two_processor);
     }
 
     public void executeRequest(RequestRecord request_record) {
