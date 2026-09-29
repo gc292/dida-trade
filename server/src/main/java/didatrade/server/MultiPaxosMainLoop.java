@@ -3,18 +3,31 @@ package didatrade.server;
 import didatrade.DidaTradePaxos;
 import didatrade.util.PhaseOneResponseProcessor;
 import didatrade.util.PhaseTwoAttempt;
+import didatrade.util.PhaseTwoResponseProcessor;
 
 import java.util.*;
 
 public class MultiPaxosMainLoop implements ConsensusLoop {
+    private static final long RETRY_DELAY_MILLIS = 500;
+
     private final DidaTradeServerState                       server_state;
     private       int                                        prepared_ballot   = -1;
     private       Map<Integer, DidaTradePaxos.AcceptedEntry> recoveredEntries  = new HashMap<>();
     private       Map<Integer, Integer>                      assignedRequests  = new HashMap<>();
-    private       Map<Integer, PhaseTwoAttempt>              phaseTwoAttempts  = new HashMap<>();
+    private       Map<ProposalKey, ProposalAttempt>          phaseTwoAttempts  = new HashMap<>();
+    private       Map<ProposalKey, Long>                     retryNotBefore    = new HashMap<>();
     private       boolean                                    has_work;
     private       int                                        next_new_instance = 0;
+    private       int                                        next_to_execute   = 0;
     private       TreeSet<Integer>                           holes             = new TreeSet<>();
+    private       int                                        phaseOneRetryBallot = -1;
+    private       long                                       phaseOneRetryNotBefore;
+
+    private record ProposalKey(int ballot, int instance) {
+    }
+
+    private record ProposalAttempt(int value, PhaseTwoAttempt attempt) {
+    }
 
 
     public MultiPaxosMainLoop(DidaTradeServerState state) {
@@ -26,14 +39,19 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
     public void run() {
         while (true) {
             synchronized (this) {
-                while (!has_work) {
+                while (!has_work && !retryReady()) {
                     try {
-                        wait();
+                        long retryDelay = nextRetryDelayMillis();
+                        if (retryDelay < 0) wait();
+                        else wait(Math.max(1, retryDelay));
                     } catch (InterruptedException e) {
                     }
                 }
                 has_work = false;
             }
+
+            processCompletedPhaseTwoAttempts();
+            executeDecidedPrefix();
 
             int ballot = server_state.getCurrentBallot();
 
@@ -41,9 +59,15 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
                 continue;
             }
 
-            for (int instance : recoveredEntries.keySet()) {
-                startProposal(instance, ballot);
+            // Phase 1 may have overlapped completion of an older attempt.
+            processCompletedPhaseTwoAttempts();
+            executeDecidedPrefix();
+
+            if (server_state.getCurrentBallot() != ballot) {
+                continue;
             }
+
+            startAssignedProposals(ballot);
 
             while (true) {
                 Integer position = assignNextPendingInstance();
@@ -63,6 +87,31 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
         notify();
     }
 
+    private boolean retryReady() {
+        long now           = System.currentTimeMillis();
+        int  currentBallot = server_state.getCurrentBallot();
+
+        return phaseOneRetryBallot == currentBallot && phaseOneRetryNotBefore <= now
+                || retryNotBefore.entrySet().stream()
+                .anyMatch(entry -> entry.getKey().ballot() == currentBallot && entry.getValue() <= now);
+    }
+
+    private long nextRetryDelayMillis() {
+        long now           = System.currentTimeMillis();
+        int  currentBallot = server_state.getCurrentBallot();
+
+        long phaseOneDelay = phaseOneRetryBallot == currentBallot
+                ? Math.max(0, phaseOneRetryNotBefore - now)
+                : Long.MAX_VALUE;
+        long phaseTwoDelay = retryNotBefore.entrySet().stream()
+                .filter(entry -> entry.getKey().ballot() == currentBallot)
+                .mapToLong(entry -> Math.max(0, entry.getValue() - now))
+                .min()
+                .orElse(Long.MAX_VALUE);
+        long delay = Math.min(phaseOneDelay, phaseTwoDelay);
+        return delay == Long.MAX_VALUE ? -1 : delay;
+    }
+
     private boolean prepareLeadership(int ballot) {
         if (server_state.getCurrentBallot() != ballot || server_state.scheduler.leader(ballot) != server_state.my_id) {
             return false;
@@ -72,10 +121,18 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
             return true;
         }
 
+        if (phaseOneRetryBallot == ballot && phaseOneRetryNotBefore > System.currentTimeMillis()) {
+            return false;
+        }
+
         PhaseOneResponseProcessor processor = server_state.runPhaseOne(0, ballot, server_state.getCompletedBallot());
 
         if (!processor.getAccepted()) {
             server_state.setCurrentBallot(processor.getMaxballot());
+            if (server_state.getCurrentBallot() == ballot) {
+                phaseOneRetryBallot    = ballot;
+                phaseOneRetryNotBefore = System.currentTimeMillis() + RETRY_DELAY_MILLIS;
+            }
             return false;
         }
 
@@ -83,20 +140,30 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
             return false;
         }
 
-        recoveredEntries = processor.getRecoveredEntries();
+        phaseOneRetryBallot = -1;
+        recoveredEntries    = processor.getRecoveredEntries();
 
         assignedRequests.clear();
+        retryNotBefore.clear();
         holes.clear();
-        next_new_instance = 0;
+        next_new_instance = next_to_execute;
+
+        Map<Integer, Integer> decidedEntries = server_state.paxos_log.getDecidedEntriesFrom(next_to_execute);
+        for (Map.Entry<Integer, Integer> entry : decidedEntries.entrySet()) {
+            assignedRequests.put(entry.getKey(), entry.getValue());
+            recoveredEntries.remove(entry.getKey());
+            next_new_instance = Math.max(next_new_instance, entry.getKey() + 1);
+        }
 
         for (DidaTradePaxos.AcceptedEntry entry : recoveredEntries.values()) {
+            if (entry.getInstance() < next_to_execute) continue;
             assignedRequests.put(entry.getInstance(), entry.getValue());
 
             next_new_instance = Math.max(next_new_instance, entry.getInstance() + 1);
         }
 
-        for (int position = 0; position < next_new_instance; position++) {
-            if (!recoveredEntries.containsKey(position)) {
+        for (int position = next_to_execute; position < next_new_instance; position++) {
+            if (!assignedRequests.containsKey(position)) {
                 holes.add(position);
             }
 
@@ -144,7 +211,9 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
     }
 
     private void startProposal(int instance, int ballot) {
-        if (phaseTwoAttempts.containsKey(instance)) {
+        ProposalKey key = new ProposalKey(ballot, instance);
+
+        if (phaseTwoAttempts.containsKey(key)) {
             return;
         }
 
@@ -159,9 +228,70 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
             return;
         }
 
-        PhaseTwoAttempt attempt = server_state.startPhaseTwo(instance, ballot, value);
-        phaseTwoAttempts.put(instance, attempt);
+        Long retryDeadline = retryNotBefore.get(key);
+        if (retryDeadline != null && retryDeadline > System.currentTimeMillis()) return;
+
+        PhaseTwoAttempt attempt = server_state.startPhaseTwoIfCurrentAndUndecided(instance, ballot, value);
+        if (attempt == null) return;
+
+        retryNotBefore.remove(key);
+        phaseTwoAttempts.put(key, new ProposalAttempt(value, attempt));
         attempt.onCompletion(this::wakeup);
+    }
+
+    private void startAssignedProposals(int ballot) {
+        for (int instance : new TreeSet<>(assignedRequests.keySet())) {
+            startProposal(instance, ballot);
+        }
+    }
+
+    private void processCompletedPhaseTwoAttempts() {
+        Iterator<Map.Entry<ProposalKey, ProposalAttempt>> iterator = phaseTwoAttempts.entrySet().iterator();
+
+        while (iterator.hasNext()) {
+            Map.Entry<ProposalKey, ProposalAttempt> entry    = iterator.next();
+            ProposalKey                             key      = entry.getKey();
+            ProposalAttempt                         proposal = entry.getValue();
+
+            if (!proposal.attempt().isDone()) {
+                continue;
+            }
+
+            PhaseTwoResponseProcessor result = proposal.attempt().getResult();
+            iterator.remove();
+
+            if (!result.getAccepted()) {
+                server_state.setCurrentBallot(result.getMaxballot());
+                if (server_state.getCurrentBallot() == key.ballot()) {
+                    retryNotBefore.put(key, System.currentTimeMillis() + RETRY_DELAY_MILLIS);
+                }
+                continue;
+            }
+
+            server_state.paxos_log.decideEntry(key.instance(), key.ballot(), proposal.value());
+            recoveredEntries.remove(key.instance());
+            retryNotBefore.entrySet().removeIf(retry -> retry.getKey().instance() == key.instance());
+            server_state.updateCompletedBallot(key.ballot());
+        }
+    }
+
+    private void executeDecidedPrefix() {
+        while (true) {
+            Integer commandId = server_state.paxos_log.getDecidedCommandId(next_to_execute);
+
+            if (commandId == null) {
+                return;
+            }
+
+            RequestRecord request = server_state.req_history.getIfPending(commandId);
+
+            if (request == null) {
+                return;
+            }
+
+            server_state.executeRequest(request);
+            next_to_execute++;
+        }
     }
 
     private Integer selectProposalValue(int instance) {

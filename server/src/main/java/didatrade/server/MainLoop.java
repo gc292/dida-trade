@@ -88,9 +88,8 @@ public class MainLoop implements ConsensusLoop {
 
                 // After phase2
                 if (ballot_aborted == false) {
+                    this.server_state.paxos_log.decideEntry(entry_number, ballot, phase_two_value);
                     this.server_state.setCompletedBallot(ballot);
-                    next_entry.command_id = phase_two_value;
-                    next_entry.decided    = true;
                 }
             }
             if (next_entry.decided == false) {

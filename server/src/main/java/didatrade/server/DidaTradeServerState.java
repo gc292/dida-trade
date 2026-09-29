@@ -46,6 +46,13 @@ public class DidaTradeServerState {
     ConsensusLoop main_loop;
     Thread        main_loop_worker;
 
+    record PhaseOneAcceptorResult(
+            boolean accepted, int maxBallot, List<DidaTradePaxos.AcceptedEntry> acceptedEntries) {
+    }
+
+    record PhaseTwoAcceptorResult(boolean accepted, int maxBallot) {
+    }
+
     public DidaTradeServerState(int port, int myself, char schedule, ProtocolMode protocol) {
         this.trade_manager    = new TradeManager();
         this.scheduler        = new ConfigurationScheduler(schedule);
@@ -62,7 +69,7 @@ public class DidaTradeServerState {
 
         this.main_loop = switch (protocol) {
             case CLASSIC -> new MainLoop(this);
-            case MULTI -> throw new UnsupportedOperationException("Multi-Paxos ainda não está implementado.");
+            case MULTI -> new MultiPaxosMainLoop(this);
         };
 
         // populate manager
@@ -154,6 +161,35 @@ public class DidaTradeServerState {
         return new PhaseTwoAttempt(phase_two_collector, phase_two_processor);
     }
 
+    public synchronized PhaseTwoAttempt startPhaseTwoIfCurrentAndUndecided(
+            int instance, int ballot, int value) {
+        if (ballot != this.current_ballot) return null;
+
+        return this.paxos_log.startIfUndecided(
+                instance, () -> startPhaseTwo(instance, ballot, value));
+    }
+
+    public synchronized PhaseOneAcceptorResult prepareAcceptor(int ballot) {
+        boolean accepted = ballot >= this.current_ballot;
+
+        if (accepted) this.current_ballot = ballot;
+
+        List<DidaTradePaxos.AcceptedEntry> entries = accepted
+                ? this.paxos_log.getAcceptedEntries()
+                : List.of();
+        return new PhaseOneAcceptorResult(accepted, this.current_ballot, entries);
+    }
+
+    public synchronized PhaseTwoAcceptorResult acceptPhaseTwo(int instance, int ballot, int value) {
+        if (ballot < this.current_ballot) {
+            return new PhaseTwoAcceptorResult(false, this.current_ballot);
+        }
+
+        this.current_ballot = ballot;
+        boolean accepted = this.paxos_log.accept(instance, ballot, value);
+        return new PhaseTwoAcceptorResult(accepted, this.current_ballot);
+    }
+
     public void executeRequest(RequestRecord request_record) {
         DidaTradeCommand command = request_record.getRequest();
         boolean          result  = false;
@@ -209,17 +245,7 @@ public class DidaTradeServerState {
     }
 
     public int findMaxDecidedBallot() {
-        int ballot = -1;
-        int length = this.paxos_log.length();
-
-        for (int i = 0; i < length; i++) {
-            PaxosInstance entry = this.paxos_log.getEntry(i);
-            if (entry == null) return ballot;
-            if (!entry.decided) return ballot;
-            else if (entry.accept_ballot > ballot) ballot = entry.accept_ballot;
-
-        }
-        return ballot;
+        return this.paxos_log.findMaxDecidedBallot();
     }
 
     public synchronized void updateCompletedBallot(int ballot) {
