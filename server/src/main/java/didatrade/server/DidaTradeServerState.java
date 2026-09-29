@@ -1,7 +1,10 @@
 package didatrade.server;
 
 import java.util.ArrayList;
+
 import didatrade.util.PhaseOneResponseProcessor;
+import didatrade.util.PhaseTwoResponseProcessor;
+import didatrade.util.PhaseTwoAttempt;
 import didatrade.util.GenericResponseCollector;
 import didatrade.util.CollectorStreamObserver;
 import didatrade.DidaTradePaxos;
@@ -42,6 +45,13 @@ public class DidaTradeServerState {
 
     ConsensusLoop main_loop;
     Thread        main_loop_worker;
+
+    record PhaseOneAcceptorResult(
+            boolean accepted, int maxBallot, List<DidaTradePaxos.AcceptedEntry> acceptedEntries) {
+    }
+
+    record PhaseTwoAcceptorResult(boolean accepted, int maxBallot) {
+    }
 
     public DidaTradeServerState(int port, int myself, char schedule, ProtocolMode protocol) {
         this.trade_manager    = new TradeManager();
@@ -92,8 +102,8 @@ public class DidaTradeServerState {
 
     public PhaseOneResponseProcessor runPhaseOne(
             int entry_number, int ballot, int completed_ballot) {
-        List<Integer> acceptors = this.scheduler.acceptors(ballot);
-        int n_acceptors = acceptors.size();
+        List<Integer> acceptors   = this.scheduler.acceptors(ballot);
+        int           n_acceptors = acceptors.size();
 
         DidaTradePaxos.PhaseOneRequest.Builder phase_one_request_builder = DidaTradePaxos.PhaseOneRequest.newBuilder();
         phase_one_request_builder.setInstance(entry_number);
@@ -119,6 +129,65 @@ public class DidaTradeServerState {
 
         phase_one_collector.waitUntilDone();
         return phase_one_processor;
+    }
+
+    public PhaseTwoResponseProcessor runPhaseTwo(int instance, int ballot, int value) {
+        PhaseTwoAttempt attempt = startPhaseTwo(instance, ballot, value);
+        System.out.println("Waiting for responses...");
+        return attempt.waitUntilDone();
+    }
+
+    public PhaseTwoAttempt startPhaseTwo(int instance, int ballot, int value) {
+        List<Integer> acceptors   = this.scheduler.acceptors(ballot);
+        int           quorum      = this.scheduler.quorum(ballot);
+        int           n_acceptors = acceptors.size();
+
+        DidaTradePaxos.PhaseTwoRequest.Builder phase_two_request = DidaTradePaxos.PhaseTwoRequest.newBuilder();
+        phase_two_request.setInstance(instance);
+        phase_two_request.setRequestballot(ballot);
+        phase_two_request.setValue(value);
+
+
+        PhaseTwoResponseProcessor phase_two_processor = new PhaseTwoResponseProcessor(quorum);
+
+        System.out.println("Calling peers with phase_two_request = " + phase_two_request);
+        ArrayList<DidaTradePaxos.PhaseTwoReply>                phase_two_responses = new ArrayList<DidaTradePaxos.PhaseTwoReply>();
+        GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> phase_two_collector = new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(phase_two_responses, n_acceptors, phase_two_processor);
+        for (int i = 0; i < n_acceptors; i++) {
+            CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> phase_two_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply>(phase_two_collector);
+            this.async_stubs[acceptors.get(i)].phasetwo(phase_two_request.build(), phase_two_observer);
+        }
+
+        return new PhaseTwoAttempt(phase_two_collector, phase_two_processor);
+    }
+
+    public synchronized PhaseTwoAttempt startPhaseTwoIfCurrentAndUndecided(
+            int instance, int ballot, int value) {
+        if (ballot != this.current_ballot) return null;
+
+        return this.paxos_log.startIfUndecided(
+                instance, () -> startPhaseTwo(instance, ballot, value));
+    }
+
+    public synchronized PhaseOneAcceptorResult prepareAcceptor(int ballot) {
+        boolean accepted = ballot >= this.current_ballot;
+
+        if (accepted) this.current_ballot = ballot;
+
+        List<DidaTradePaxos.AcceptedEntry> entries = accepted
+                ? this.paxos_log.getAcceptedEntries()
+                : List.of();
+        return new PhaseOneAcceptorResult(accepted, this.current_ballot, entries);
+    }
+
+    public synchronized PhaseTwoAcceptorResult acceptPhaseTwo(int instance, int ballot, int value) {
+        if (ballot < this.current_ballot) {
+            return new PhaseTwoAcceptorResult(false, this.current_ballot);
+        }
+
+        this.current_ballot = ballot;
+        boolean accepted = this.paxos_log.accept(instance, ballot, value);
+        return new PhaseTwoAcceptorResult(accepted, this.current_ballot);
     }
 
     public void executeRequest(RequestRecord request_record) {
@@ -176,17 +245,7 @@ public class DidaTradeServerState {
     }
 
     public int findMaxDecidedBallot() {
-        int ballot = -1;
-        int length = this.paxos_log.length();
-
-        for (int i = 0; i < length; i++) {
-            PaxosInstance entry = this.paxos_log.getEntry(i);
-            if (entry == null) return ballot;
-            if (!entry.decided) return ballot;
-            else if (entry.accept_ballot > ballot) ballot = entry.accept_ballot;
-
-        }
-        return ballot;
+        return this.paxos_log.findMaxDecidedBallot();
     }
 
     public synchronized void updateCompletedBallot(int ballot) {

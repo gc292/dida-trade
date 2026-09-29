@@ -2,7 +2,9 @@
 
 Project developed for the **Distributed Applications Development (DAD)** course, 2026/2027.
 
-DIDA Trade is a distributed trading system implemented in **Java** and **gRPC**. The project explores state machine replication and consensus protocols based on **Paxos**, progressively extending the baseline implementation with Multi-Paxos, Fast Paxos, causal operations, and dynamic membership.
+DIDA Trade is a distributed trading system implemented in **Java** and **gRPC**. The project explores state machine
+replication and consensus protocols based on **Paxos**, progressively extending the baseline implementation with
+Multi-Paxos, Fast Paxos, causal operations, and dynamic membership.
 
 ## Requirements
 
@@ -25,7 +27,8 @@ Load it from the repository root before compiling or running the project:
 source dev_env/env.sh
 ```
 
-> The provided environment is configured for Linux x86-64. Paths and platform-specific dependencies may need to be adjusted when running on another operating system or CPU architecture.
+> The provided environment is configured for Linux x86-64. Paths and platform-specific dependencies may need to be
+> adjusted when running on another operating system or CPU architecture.
 
 ## Project Structure
 
@@ -49,7 +52,8 @@ DIDA-Trade/
 
 **Server**
 
-Runs a replica of the distributed trading system. Replicas participate in the consensus protocol and execute decided operations against their local state.
+Runs a replica of the distributed trading system. Replicas participate in the consensus protocol and execute decided
+operations against their local state.
 
 **App**
 
@@ -81,7 +85,8 @@ This builds the complete multi-module project and generates the required Protoco
 
 The `contract` module depends on platform-specific Protocol Buffers and gRPC executables.
 
-The repository provides configurations for the supported development environments. Make sure that `contract/pom.xml` references binaries compatible with your operating system and CPU architecture before compiling.
+The repository provides configurations for the supported development environments. Make sure that `contract/pom.xml`
+references binaries compatible with your operating system and CPU architecture before compiling.
 
 The current development configuration targets **Linux x86-64**.
 
@@ -134,13 +139,16 @@ Arguments:
 * `{scheduler}` — configuration schedule (`A` for the initial configuration).
 * Protocol mode is optional and defaults to `classic`; it is independent of the schedule.
 
-Step 2 is in progress: `classic` runs the existing per-instance Paxos loop.
-`multi` currently exits with an explicit unsupported-operation error; the Multi-Paxos
-loop and pipeline are not implemented yet. Phase 1 replies now include accepted
-entries per log position, and shared Phase 1/command execution helpers are available.
-The Classic path retains its scalar Phase 1 selection, but replies carry additional data.
-Existing `scripts/run.sh s0`, `s1`, and `s2` commands still select Classic with Schedule A.
+Step 2 implements Multi-Paxos with Schedule A. The `multi` mode performs Phase 1
+once per ballot, recovers previously accepted values by log position, and allows
+multiple Phase 2 instances to overlap without waiting for earlier instances to decide.
+Decisions may be learned out of order, while commands are executed strictly in log
+order. Leader changes recover accepted values through Phase 1, and failed Phase 1 or
+Phase 2 attempts are retried without busy-waiting.
 
+The `classic` mode remains available and runs the original per-instance Paxos protocol.
+Existing `scripts/run.sh s0`, `s1`, and `s2` commands select Classic with Schedule A.
+To run Multi-Paxos directly, pass `multi` as the optional protocol argument.
 
 The actual port used by a replica is:
 
@@ -280,7 +288,7 @@ debug <mode> <replica_id>
 The currently implemented modes are:
 
 | Mode | Behavior                 |
-| ---: | ------------------------ |
+|-----:|--------------------------|
 |  `1` | Crash replica            |
 |  `2` | Freeze replica           |
 |  `3` | Unfreeze replica         |
@@ -289,7 +297,8 @@ The currently implemented modes are:
 
 Artificial delay introduces a random delay between **100 ms and 1000 ms** when processing requests.
 
-These modes are useful for testing the behavior of the distributed protocol under replica failures, delayed communication, and partial availability.
+These modes are useful for testing the behavior of the distributed protocol under replica failures, delayed
+communication, and partial availability.
 
 ## Code Formatting
 
@@ -325,6 +334,7 @@ Automatic formatting on save can optionally be enabled under:
 Tools > Actions on Save > Reformat code
 ```
 
-Some `ij_java_*` options are specific to IntelliJ IDEA or compatible JetBrains formatters. Other editors may only apply the standard EditorConfig properties.
+Some `ij_java_*` options are specific to IntelliJ IDEA or compatible JetBrains formatters. Other editors may only apply
+the standard EditorConfig properties.
 
 Formatting rules affect source-code formatting only; they do not introduce additional linting or Maven validation.

@@ -42,9 +42,10 @@ message PhaseTwoReply {
 }
 
 message LearnRequest {
-    int32 instance = 1;
+  int32 instance   = 1;
   int32 ballot     = 2;
   int32 value      = 3;
+  int32 serverid   = 4;
 }
 
 message LearnReply {

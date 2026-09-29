@@ -2,6 +2,7 @@ package didatrade.server;
 
 import java.util.Enumeration;
 import java.util.Hashtable;
+import java.util.Set;
 
 public class RequestHistory {
     private Hashtable<Integer, RequestRecord> pending;
@@ -21,6 +22,22 @@ public class RequestHistory {
         Enumeration<Integer> pendingids = this.pending.keys();
         if (pendingids.hasMoreElements()) return this.pending.get(pendingids.nextElement());
         else return null;
+    }
+
+    public synchronized RequestRecord getFirstPendingExcluding(Set<Integer> excludedIds) {
+        Enumeration<Integer> pendingids = this.pending.keys();
+
+        while (pendingids.hasMoreElements()) {
+            Integer id = pendingids.nextElement();
+
+            if (excludedIds.contains(id)) {
+                continue;
+            }
+
+            return this.pending.get(id);
+        }
+        
+        return null;
     }
 
     public synchronized RequestRecord getIfProcessed(int requestid) {
