@@ -29,11 +29,6 @@ public class PaxosLog {
         this.learnedValues = new HashMap<>();
     }
 
-    public synchronized PaxosInstance getEntry(int position) {
-        return this.log.get(position);
-    }
-
-
     public synchronized PaxosInstance testAndSetEntry(int position) {
         PaxosInstance entry = this.log.get(position);
 

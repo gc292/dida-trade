@@ -3,14 +3,11 @@ package didatrade.server;
 
 import java.util.*;
 
-import didatrade.DidaTradeMain;
 import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
 import didatrade.util.GenericResponseCollector;
 import didatrade.util.CollectorStreamObserver;
 
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
 import io.grpc.Context;
 
@@ -107,7 +104,6 @@ public class DidaTradePaxosServiceImpl extends DidaTradePaxosServiceGrpc.DidaTra
                 System.out.println("Paxos acceptor: going to notify learners for entry " + instance + " with timestamp " + ballot + " request = " + learn_request);
                 ArrayList<DidaTradePaxos.LearnReply>                learn_responses = new ArrayList<DidaTradePaxos.LearnReply>();
                 GenericResponseCollector<DidaTradePaxos.LearnReply> learn_collector = new GenericResponseCollector<DidaTradePaxos.LearnReply>(learn_responses, n_targets);
-                ;
                 for (int i = 0; i < n_targets; i++) {
                     CollectorStreamObserver<DidaTradePaxos.LearnReply> learn_observer = new CollectorStreamObserver<DidaTradePaxos.LearnReply>(learn_collector);
                     this.server_state.async_stubs[learners.get(i)].learn(learn_request, learn_observer);
