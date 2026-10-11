@@ -37,6 +37,13 @@ public class DidaTradeCommand {
     }
 
     // Setter method
+    public boolean sameRequestAs(DidaTradeCommand other) {
+        return other != null && this.action == other.action
+                && this.user_id == other.user_id && this.stock == other.stock
+                // BALANCE stores its result in quantity; it has no quantity argument.
+                && (this.action == DidaTradeAction.BALANCE || this.quantity == other.quantity);
+    }
+
     public void setQuantity(int value) {
         this.quantity = value;
     }

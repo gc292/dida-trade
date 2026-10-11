@@ -17,10 +17,12 @@ import io.grpc.ManagedChannelBuilder;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 
 public class DidaTradeServerState {
     public static final int DEFAULT_POPULATION = 10;
+    private static final long CONSENSUS_RPC_TIMEOUT_SECONDS = 2;
     int                    max_participants;
     TradeManager           trade_manager;
     ConfigurationScheduler scheduler;
@@ -123,7 +125,9 @@ public class DidaTradeServerState {
 
         for (int i = 0; i < n_acceptors; i++) {
             CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> phase_one_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseOneReply>(phase_one_collector);
-            this.async_stubs[acceptors.get(i)].phaseone(phase_one_request, phase_one_observer);
+            this.async_stubs[acceptors.get(i)]
+                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .phaseone(phase_one_request, phase_one_observer);
         }
 
 
@@ -155,7 +159,9 @@ public class DidaTradeServerState {
         GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> phase_two_collector = new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(phase_two_responses, n_acceptors, phase_two_processor);
         for (int i = 0; i < n_acceptors; i++) {
             CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> phase_two_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply>(phase_two_collector);
-            this.async_stubs[acceptors.get(i)].phasetwo(phase_two_request.build(), phase_two_observer);
+            this.async_stubs[acceptors.get(i)]
+                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .phasetwo(phase_two_request.build(), phase_two_observer);
         }
 
         return new PhaseTwoAttempt(phase_two_collector, phase_two_processor);

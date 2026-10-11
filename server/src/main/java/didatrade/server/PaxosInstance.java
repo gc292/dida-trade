@@ -4,6 +4,7 @@ package didatrade.server;
 public class PaxosInstance {
     int     instance_nb;
     int     command_id;
+    int     accepted_command_id;
     int     write_ballot;
     int     decision_ballot;
     boolean decided;
