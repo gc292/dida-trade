@@ -283,6 +283,11 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
                 return;
             }
 
+            if (server_state.req_history.getIfProcessed(commandId) != null) {
+                next_to_execute++;
+                continue;
+            }
+
             RequestRecord request = server_state.req_history.getIfPending(commandId);
 
             if (request == null) {

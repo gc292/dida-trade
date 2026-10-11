@@ -54,10 +54,18 @@ public class RequestHistory {
         return record;
     }
 
-    public synchronized void addToPending(int requestid, RequestRecord record) {
+    public synchronized RequestRecord addToPending(int requestid, RequestRecord record) {
         Integer id = new Integer(requestid);
 
+        RequestRecord existing = getIfExists(requestid);
+        if (existing != null) {
+            if (!existing.getRequest().sameRequestAs(record.getRequest())) {
+                throw new IllegalArgumentException("Request ID reused with different arguments.");
+            }
+            return existing;
+        }
         this.pending.put(id, record);
+        return record;
     }
 
     public synchronized RequestRecord moveToProcessed(int requestid) {

@@ -53,8 +53,10 @@ public class PaxosLog {
         PaxosInstance entry = testAndSetEntry(position);
 
         if (entry.decided && entry.command_id != commandId) return false;
+        if (ballot < entry.write_ballot) return false;
+        if (ballot == entry.write_ballot && entry.accepted_command_id != commandId) return false;
 
-        entry.command_id   = commandId;
+        entry.accepted_command_id = commandId;
         entry.write_ballot = ballot;
         return true;
     }
@@ -67,7 +69,7 @@ public class PaxosLog {
 
             entries.add(DidaTradePaxos.AcceptedEntry.newBuilder()
                     .setInstance(entry.instance_nb)
-                    .setValue(entry.command_id)
+                    .setValue(entry.accepted_command_id)
                     .setValballot(entry.write_ballot)
                     .build());
         }
@@ -112,12 +114,8 @@ public class PaxosLog {
             int position, int ballot, int commandId, int acceptor, int quorum) {
         PaxosInstance entry = testAndSetEntry(position);
 
-        if (entry.decided) {
-            if (entry.command_id != commandId) {
-                throw new IllegalStateException("Paxos instance already decided with a different value.");
-            }
-            return false;
-        }
+        // An isolated losing vote from an earlier round is not a conflicting decision.
+        if (entry.decided) return false;
 
         Map<Integer, LearnedValue> byBallot = learnedValues.computeIfAbsent(position, ignored -> new HashMap<>());
         LearnedValue               learned  = byBallot.computeIfAbsent(ballot, ignored -> new LearnedValue(commandId));

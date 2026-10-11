@@ -41,9 +41,10 @@ public class MainLoop implements ConsensusLoop {
 
     public synchronized void processEntry(int entry_number) {
 
-        PaxosInstance next_entry = this.server_state.paxos_log.testAndSetEntry(entry_number);
+        int proposedBallot = -1;
+        int proposedValue = 0;
 
-        while (next_entry.decided == false) {
+        while (!this.server_state.paxos_log.isDecided(entry_number)) {
             RequestRecord request_record   = this.server_state.req_history.getFirstPending();
             int           ballot           = this.server_state.getCurrentBallot();
             int           completed_ballot = this.server_state.getCompletedBallot();
@@ -76,6 +77,14 @@ public class MainLoop implements ConsensusLoop {
                 if (ballot_aborted == false) {
                     System.out.println("Going to run paxos phase 2");
 
+                    // A timed-out send can still be processed remotely: retry the same value.
+                    if (proposedBallot == ballot) {
+                        phase_two_value = proposedValue;
+                    } else {
+                        proposedBallot = ballot;
+                        proposedValue = phase_two_value;
+                    }
+
                     // send phase2
                     PhaseTwoResponseProcessor phase_two_processor =
                             this.server_state.runPhaseTwo(entry_number, ballot, phase_two_value);
@@ -92,12 +101,15 @@ public class MainLoop implements ConsensusLoop {
                     this.server_state.setCompletedBallot(ballot);
                 }
             }
-            if (next_entry.decided == false) {
+            if (!this.server_state.paxos_log.isDecided(entry_number)) {
                 System.out.println("Entry not decided: waiting");
                 this.has_work = false;
+                boolean retry = request_record != null
+                        && this.server_state.scheduler.leader(this.server_state.getCurrentBallot()) == this.server_state.my_id;
                 while (this.has_work == false) {
                     try {
-                        wait();
+                        wait(retry ? 500 : 0);
+                        if (retry) break;
                     } catch (InterruptedException e) {
                     }
                 }
@@ -106,8 +118,9 @@ public class MainLoop implements ConsensusLoop {
         }
 
 
-        System.out.println("Log entry with number " + this.next_log_entry + " has been decided with command id = " + next_entry.command_id);
-        RequestRecord request_record = this.server_state.req_history.getIfPending(next_entry.command_id);
+        int commandId = this.server_state.paxos_log.getDecidedCommandId(entry_number);
+        System.out.println("Log entry with number " + entry_number + " has been decided with command id = " + commandId);
+        RequestRecord request_record = this.server_state.req_history.getIfExists(commandId);
         // if I receive the paxos decision before the request
         while (request_record == null) {
             System.out.println("Record not available!");
@@ -115,12 +128,14 @@ public class MainLoop implements ConsensusLoop {
                 wait();
             } catch (InterruptedException e) {
             }
-            request_record = this.server_state.req_history.getIfPending(next_entry.command_id);
+            request_record = this.server_state.req_history.getIfExists(commandId);
         }
 
         // exec request in entry
         // System.out.println("Going to process command with id = " + next_entry.command_id);
 
-        this.server_state.executeRequest(request_record);
+        if (this.server_state.req_history.getIfProcessed(commandId) == null) {
+            this.server_state.executeRequest(request_record);
+        }
     }
 }
