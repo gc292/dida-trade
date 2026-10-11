@@ -12,6 +12,31 @@ import java.util.function.Supplier;
 
 
 public class PaxosLog {
+    public enum FastLearnResult {
+        PENDING, DECIDED, COLLISION
+    }
+
+    /** TODO FAST-02: authorize one position/ballot; ANY must not become an accepted value. */
+    public synchronized boolean authorizeFastInstance(int position, int ballot) {
+        throw new UnsupportedOperationException("TODO FAST-02: authorize Fast position");
+    }
+
+    /** TODO FAST-02: require authorization and preserve the first vote in this ballot. */
+    public synchronized boolean acceptFastProposal(int position, int ballot, int commandId) {
+        throw new UnsupportedOperationException("TODO FAST-02: accept direct proposal");
+    }
+
+    /** TODO FAST-06: first authorized, undecided position without a local vote in this ballot. */
+    public synchronized Integer getNextFastInstance(int ballot, int firstPosition) {
+        throw new UnsupportedOperationException("TODO FAST-06: find eligible Fast position");
+    }
+
+    /** TODO FAST-05: count distinct acceptors per value/ballot; return collision evidence. */
+    public synchronized FastLearnResult recordFastLearn(
+            int position, int ballot, int commandId, int acceptor, int quorum) {
+        throw new UnsupportedOperationException("TODO FAST-05: record Fast learner evidence");
+    }
+
     private Hashtable<Integer, PaxosInstance> log;
     private Map<Integer, Map<Integer, LearnedValue>> learnedValues;
 
