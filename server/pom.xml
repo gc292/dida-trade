@@ -56,6 +56,7 @@
 	</dependencies>
 
 	<build>
+		<testSourceDirectory>${project.basedir}/../teste/server/java</testSourceDirectory>
 		<plugins>
 			<!-- Plug-in used to compile the sources of your project. Java 9 requires 
 				at least version 3.7.0 to properly handle modules. -->
