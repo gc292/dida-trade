@@ -1,15 +1,11 @@
 
 package didatrade.server;
 
-import java.util.*;
 
 import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
-import didatrade.util.GenericResponseCollector;
-import didatrade.util.CollectorStreamObserver;
 
 import io.grpc.stub.StreamObserver;
-import io.grpc.Context;
 
 public class DidaTradePaxosServiceImpl extends DidaTradePaxosServiceGrpc.DidaTradePaxosServiceImplBase {
     DidaTradeServerState server_state;
@@ -65,8 +61,15 @@ public class DidaTradePaxosServiceImpl extends DidaTradePaxosServiceGrpc.DidaTra
         int instance = request.getInstance();
         int ballot   = request.getRequestballot();
         int value    = request.getValue();
-        DidaTradeServerState.PhaseTwoAcceptorResult result =
-                this.server_state.acceptPhaseTwo(instance, ballot, value);
+        boolean any = request.getAny();
+        if (any && !this.server_state.getFastPaxosMode()) {
+            responseObserver.onError(io.grpc.Status.FAILED_PRECONDITION
+                    .withDescription("ANY requires Fast Paxos mode").asRuntimeException());
+            return;
+        }
+        DidaTradeServerState.PhaseTwoAcceptorResult result = any
+                ? this.server_state.authorizeFastInstance(instance, ballot)
+                : this.server_state.acceptPhaseTwo(instance, ballot, value);
 
 
         DidaTradePaxos.PhaseTwoReply.Builder response_builder = DidaTradePaxos.PhaseTwoReply.newBuilder();
@@ -83,33 +86,9 @@ public class DidaTradePaxosServiceImpl extends DidaTradePaxosServiceGrpc.DidaTra
         responseObserver.onNext(response);
         responseObserver.onCompleted();
 
-        // Notify learners
         if (result.accepted()) {
-
-            Context ctx = Context.current().fork();
-            ctx.run(() -> {
-                List<Integer> learners  = this.server_state.scheduler.learners(ballot);
-                int           n_targets = learners.size();
-
-                DidaTradePaxos.LearnRequest.Builder learn_request_builder = DidaTradePaxos.LearnRequest.newBuilder();
-                learn_request_builder.setInstance(instance);
-                learn_request_builder.setValue(value);
-                learn_request_builder.setBallot(ballot);
-                learn_request_builder.setServerid(this.server_state.my_id);
-
-                DidaTradePaxos.LearnRequest learn_request = learn_request_builder.build();
-
-                // System.out.println("Sending learn request: \n" + learn_request);
-
-                System.out.println("Paxos acceptor: going to notify learners for entry " + instance + " with timestamp " + ballot + " request = " + learn_request);
-                ArrayList<DidaTradePaxos.LearnReply>                learn_responses = new ArrayList<DidaTradePaxos.LearnReply>();
-                GenericResponseCollector<DidaTradePaxos.LearnReply> learn_collector = new GenericResponseCollector<DidaTradePaxos.LearnReply>(learn_responses, n_targets);
-                for (int i = 0; i < n_targets; i++) {
-                    CollectorStreamObserver<DidaTradePaxos.LearnReply> learn_observer = new CollectorStreamObserver<DidaTradePaxos.LearnReply>(learn_collector);
-                    this.server_state.async_stubs[learners.get(i)].learn(learn_request, learn_observer);
-                }
-                // System.out.println("Learn request completed for instance = " + instance);
-            });
+            if (any) this.server_state.main_loop.wakeup();
+            else this.server_state.notifyLearners(instance, ballot, value);
         }
 
 

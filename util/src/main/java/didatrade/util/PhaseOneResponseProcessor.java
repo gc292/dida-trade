@@ -73,7 +73,7 @@ public class PhaseOneResponseProcessor extends GenericResponseProcessor<DidaTrad
             this.valballot = last_response.getValballot();
         }
 
-        if (this.acceptedReplicas.size() >= this.scheduler.quorum(this.high_ballot)) {
+        if (this.acceptedReplicas.size() >= this.scheduler.recoveryQuorum(this.high_ballot)) {
             this.accepted = true;
             return true;
         }

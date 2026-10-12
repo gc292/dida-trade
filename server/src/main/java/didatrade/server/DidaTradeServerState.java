@@ -1,28 +1,24 @@
 package didatrade.server;
 
-import java.util.ArrayList;
-
-import didatrade.util.PhaseOneResponseProcessor;
-import didatrade.util.FastPhaseOneResponseProcessor;
-import didatrade.util.PhaseTwoResponseProcessor;
-import didatrade.util.PhaseTwoAttempt;
-import didatrade.util.GenericResponseCollector;
-import didatrade.util.CollectorStreamObserver;
 import didatrade.DidaTradePaxos;
 import didatrade.DidaTradePaxosServiceGrpc;
 import didatrade.configs.ConfigurationScheduler;
 import didatrade.core.TradeManager;
+import didatrade.util.*;
+import io.grpc.Context;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 
 public class DidaTradeServerState {
-    public static final int DEFAULT_POPULATION = 10;
+    public static final  int  DEFAULT_POPULATION            = 10;
     private static final long CONSENSUS_RPC_TIMEOUT_SECONDS = 2;
     int                    max_participants;
     TradeManager           trade_manager;
@@ -136,39 +132,130 @@ public class DidaTradeServerState {
         return phase_one_processor;
     }
 
-    /** TODO FAST-01: explicit Schedule B Fast quorum; never use the Classic quorum by accident. */
     public int getFastQuorum(int ballot) {
-        throw new UnsupportedOperationException("TODO FAST-01: Schedule B Fast quorum");
+        return scheduler.superMajority(ballot);
     }
 
-    /** TODO FAST-04: reuse promise transport, but collect with the Fast recovery processor. */
     public FastPhaseOneResponseProcessor runFastPhaseOne(int ballot) {
-        throw new UnsupportedOperationException("TODO FAST-04: Fast Phase 1 transport");
+        List<Integer> acceptors = scheduler.acceptors(ballot);
+
+        DidaTradePaxos.PhaseOneRequest request = DidaTradePaxos.PhaseOneRequest.newBuilder().setInstance(0).setRequestballot(ballot).build();
+
+        FastPhaseOneResponseProcessor processor = new FastPhaseOneResponseProcessor(ballot, acceptors, scheduler.recoveryQuorum(ballot), scheduler.superMajority(ballot));
+
+        ArrayList<DidaTradePaxos.PhaseOneReply> responses = new ArrayList<>();
+
+        GenericResponseCollector<DidaTradePaxos.PhaseOneReply> collector = new GenericResponseCollector<>(responses, acceptors.size(), processor);
+
+        for (int acceptor : acceptors) {
+            CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> observer = new CollectorStreamObserver<>(collector);
+
+            async_stubs[acceptor]
+                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .phaseone(request, observer);
+        }
+        collector.waitUntilDone();
+        return processor;
     }
 
-    /** TODO FAST-04: send a fixed recovered value with the explicit Fast quorum. */
     public PhaseTwoAttempt startFastPhaseTwo(int instance, int ballot, int value) {
-        throw new UnsupportedOperationException("TODO FAST-04: concrete Fast Phase 2");
+        return startPhaseTwo(instance, ballot, value, getFastQuorum(ballot));
     }
 
-    /** TODO FAST-06: send ANY; completing this attempt authorizes a slot, not a command. */
     public PhaseTwoAttempt startFastAny(int instance, int ballot) {
-        throw new UnsupportedOperationException("TODO FAST-06: ANY transport");
+        DidaTradePaxos.PhaseTwoRequest request =
+                DidaTradePaxos.PhaseTwoRequest.newBuilder()
+                        .setInstance(instance)
+                        .setRequestballot(ballot)
+                        .setAny(true)
+                        .build();
+
+        return sendPhaseTwo(request, getFastQuorum(ballot));
     }
 
-    /** TODO FAST-02: promise check and ANY authorization must share the acceptor monitor. */
+
+    private PhaseTwoAttempt sendPhaseTwo(
+            DidaTradePaxos.PhaseTwoRequest request, int quorum) {
+
+        List<Integer> acceptors = scheduler.acceptors(request.getRequestballot());
+
+        PhaseTwoResponseProcessor               processor = new PhaseTwoResponseProcessor(quorum);
+        ArrayList<DidaTradePaxos.PhaseTwoReply> responses = new ArrayList<>();
+
+        GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> collector =
+                new GenericResponseCollector<>(responses, acceptors.size(), processor);
+
+        for (int acceptor : acceptors) {
+            CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> observer =
+                    new CollectorStreamObserver<>(collector);
+
+            async_stubs[acceptor]
+                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .phasetwo(request, observer);
+        }
+
+        return new PhaseTwoAttempt(collector, processor);
+    }
+
     public synchronized PhaseTwoAcceptorResult authorizeFastInstance(int instance, int ballot) {
-        throw new UnsupportedOperationException("TODO FAST-02: Fast acceptor authorization");
+        if (ballot < current_ballot) {
+            return new PhaseTwoAcceptorResult(false, current_ballot);
+        }
+
+        current_ballot = ballot;
+        boolean accepted = paxos_log.authorizeFastInstance(instance, ballot);
+        return new PhaseTwoAcceptorResult(accepted, current_ballot);
     }
 
-    /** TODO FAST-02: clients cannot raise promises; require current ballot plus authorization. */
     public synchronized PhaseTwoAcceptorResult acceptFastProposal(int instance, int ballot, int value) {
-        throw new UnsupportedOperationException("TODO FAST-02: atomic Fast proposal");
+        if (ballot != current_ballot) {
+            return new PhaseTwoAcceptorResult(false, current_ballot);
+        }
+
+        boolean accepted = paxos_log.acceptFastProposal(instance, ballot, value);
+        return new PhaseTwoAcceptorResult(accepted, current_ballot);
     }
 
-    /** TODO FAST-05: extract the existing acceptor notification for both voting origins. */
+
+    public PhaseTwoAttempt startFastPhaseTwoIfCurrentAndUndecided(
+            int instance, int ballot, int value) {
+        return startIfCurrentAndUndecided(
+                instance, ballot, () -> startFastPhaseTwo(instance, ballot, value));
+    }
+
+    public PhaseTwoAttempt startFastAnyIfCurrentAndUndecided(int instance, int ballot) {
+        return startIfCurrentAndUndecided(
+                instance, ballot, () -> startFastAny(instance, ballot));
+    }
+
+    /**
+     * Sends a concrete vote outside acceptor locks and the originating RPC cancellation.
+     */
     public void notifyLearners(int instance, int ballot, int value) {
-        throw new UnsupportedOperationException("TODO FAST-05: reusable Learn notification");
+        Context ctx = Context.current().fork();
+        ctx.run(() -> {
+            List<Integer> learners  = this.scheduler.learners(ballot);
+            int           n_targets = learners.size();
+
+            DidaTradePaxos.LearnRequest.Builder learn_request_builder = DidaTradePaxos.LearnRequest.newBuilder();
+            learn_request_builder.setInstance(instance);
+            learn_request_builder.setValue(value);
+            learn_request_builder.setBallot(ballot);
+            learn_request_builder.setServerid(this.my_id);
+
+            DidaTradePaxos.LearnRequest learn_request = learn_request_builder.build();
+
+            // System.out.println("Sending learn request: \n" + learn_request);
+
+            System.out.println("Paxos acceptor: going to notify learners for entry " + instance + " with timestamp " + ballot + " request = " + learn_request);
+            ArrayList<DidaTradePaxos.LearnReply>                learn_responses = new ArrayList<DidaTradePaxos.LearnReply>();
+            GenericResponseCollector<DidaTradePaxos.LearnReply> learn_collector = new GenericResponseCollector<DidaTradePaxos.LearnReply>(learn_responses, n_targets);
+            for (int i = 0; i < n_targets; i++) {
+                CollectorStreamObserver<DidaTradePaxos.LearnReply> learn_observer = new CollectorStreamObserver<DidaTradePaxos.LearnReply>(learn_collector);
+                this.async_stubs[learners.get(i)].learn(learn_request, learn_observer);
+            }
+            // System.out.println("Learn request completed for instance = " + instance);
+        });
     }
 
     public PhaseTwoResponseProcessor runPhaseTwo(int instance, int ballot, int value) {
@@ -178,37 +265,32 @@ public class DidaTradeServerState {
     }
 
     public PhaseTwoAttempt startPhaseTwo(int instance, int ballot, int value) {
-        List<Integer> acceptors   = this.scheduler.acceptors(ballot);
-        int           quorum      = this.scheduler.quorum(ballot);
-        int           n_acceptors = acceptors.size();
-
-        DidaTradePaxos.PhaseTwoRequest.Builder phase_two_request = DidaTradePaxos.PhaseTwoRequest.newBuilder();
-        phase_two_request.setInstance(instance);
-        phase_two_request.setRequestballot(ballot);
-        phase_two_request.setValue(value);
-
-
-        PhaseTwoResponseProcessor phase_two_processor = new PhaseTwoResponseProcessor(quorum);
-
-        System.out.println("Calling peers with phase_two_request = " + phase_two_request);
-        ArrayList<DidaTradePaxos.PhaseTwoReply>                phase_two_responses = new ArrayList<DidaTradePaxos.PhaseTwoReply>();
-        GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> phase_two_collector = new GenericResponseCollector<DidaTradePaxos.PhaseTwoReply>(phase_two_responses, n_acceptors, phase_two_processor);
-        for (int i = 0; i < n_acceptors; i++) {
-            CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> phase_two_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply>(phase_two_collector);
-            this.async_stubs[acceptors.get(i)]
-                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                    .phasetwo(phase_two_request.build(), phase_two_observer);
-        }
-
-        return new PhaseTwoAttempt(phase_two_collector, phase_two_processor);
+        return startPhaseTwo(instance, ballot, value, scheduler.quorum(ballot));
     }
 
-    public synchronized PhaseTwoAttempt startPhaseTwoIfCurrentAndUndecided(
-            int instance, int ballot, int value) {
-        if (ballot != this.current_ballot) return null;
+    private PhaseTwoAttempt startPhaseTwo(
+            int instance, int ballot, int value, int quorum) {
 
-        return this.paxos_log.startIfUndecided(
-                instance, () -> startPhaseTwo(instance, ballot, value));
+        DidaTradePaxos.PhaseTwoRequest request =
+                DidaTradePaxos.PhaseTwoRequest.newBuilder()
+                        .setInstance(instance)
+                        .setRequestballot(ballot)
+                        .setValue(value)
+                        .build();
+
+        return sendPhaseTwo(request, quorum);
+    }
+
+    public PhaseTwoAttempt startPhaseTwoIfCurrentAndUndecided(
+            int instance, int ballot, int value) {
+        return startIfCurrentAndUndecided(
+                instance, ballot, () -> startPhaseTwo(instance, ballot, value));
+    }
+
+    private synchronized PhaseTwoAttempt startIfCurrentAndUndecided(
+            int instance, int ballot, Supplier<PhaseTwoAttempt> starter) {
+        if (ballot != current_ballot) return null;
+        return paxos_log.startIfUndecided(instance, starter);
     }
 
     public synchronized PhaseOneAcceptorResult prepareAcceptor(int ballot) {

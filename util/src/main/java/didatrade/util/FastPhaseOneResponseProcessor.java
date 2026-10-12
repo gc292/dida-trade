@@ -2,48 +2,143 @@ package didatrade.util;
 
 import didatrade.DidaTradePaxos;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Step 3 recovery scaffold, independent from Classic/Multi's PhaseOneResponseProcessor.
  * Keep complete promises per acceptor; do not collapse equal-ballot votes on arrival.
- * Implementation order: Design-decisions/Step-3-Implementation-Guide.md.
+ * Implementation order: Docs/step3/Step-3-Implementation-Guide.md.
  */
 public final class FastPhaseOneResponseProcessor
         extends GenericResponseProcessor<DidaTradePaxos.PhaseOneReply> {
-    private final int ballot;
-    private final Set<Integer> acceptors;
-    private final int quorum;
+    private final int                                        ballot;
+    private final Set<Integer>                               acceptors;
+    private final int                                        quorum;
+    private final int                                        fastQuorum;
+    private final Map<Integer, DidaTradePaxos.PhaseOneReply> promises  = new HashMap<>();
+    private       int                                        maxballot = -1;
+    private       boolean                                    accepted  = false;
+    private       boolean                                    finished  = false;
 
     public FastPhaseOneResponseProcessor(int ballot, List<Integer> acceptors, int quorum) {
+        this(ballot, acceptors, quorum, quorum);
+    }
+
+    public FastPhaseOneResponseProcessor(int ballot, List<Integer> acceptors,
+                                         int recoveryQuorum, int fastQuorum) {
         this.ballot = ballot;
         this.acceptors = Set.copyOf(acceptors);
-        this.quorum = quorum;
+        int n = this.acceptors.size();
+        if (ballot < 0 || n == 0 || n != acceptors.size()
+                || recoveryQuorum < 1 || recoveryQuorum > n
+                || fastQuorum < 1 || fastQuorum > n
+                || 2L * fastQuorum <= n
+                || recoveryQuorum + 2L * fastQuorum <= 2L * n) {
+            throw new IllegalArgumentException("Invalid Fast recovery quorums/configuration");
+        }
+        this.quorum = recoveryQuorum;
+        this.fastQuorum = fastQuorum;
     }
 
     @Override
     public synchronized boolean onNext(ArrayList<DidaTradePaxos.PhaseOneReply> allResponses,
                                        DidaTradePaxos.PhaseOneReply response) {
-        // TODO FAST-03: validate identity/ballot, retain complete distinct promises, freeze Q.
-        throw new UnsupportedOperationException("TODO FAST-03: collect Fast promises");
+        if (finished) return true;
+
+        if (response.getRequestballot() != ballot || !acceptors.contains(response.getServerid())) return false;
+
+        if (promises.containsKey(response.getServerid())) return false;
+
+        maxballot = Math.max(maxballot, response.getMaxballot());
+
+        if (!response.getAccepted()) {
+            finished = true;
+            return true;
+        }
+
+        promises.put(response.getServerid(), response);
+
+        if (promises.size() >= quorum) {
+            accepted = true;
+            finished = true;
+        }
+
+        return finished;
     }
 
+
     public synchronized boolean getAccepted() {
-        // TODO FAST-03: successful promise quorum, not simply RPC completion.
-        throw new UnsupportedOperationException("TODO FAST-03: Fast promise quorum result");
+        return accepted;
     }
 
     public synchronized int getMaxballot() {
-        // TODO FAST-03: highest promise from valid replies, including rejections.
-        throw new UnsupportedOperationException("TODO FAST-03: highest observed promise");
+        return maxballot;
     }
 
     public synchronized Map<Integer, DidaTradePaxos.AcceptedEntry> getRecoveredEntries() {
-        // TODO FAST-03: choose per position from the maximum accepted ballot in frozen Q.
-        // Absent positions have no recovered concrete value; ANY is not an AcceptedEntry.
-        throw new UnsupportedOperationException("TODO FAST-03: select Fast recovery values");
+        if (!accepted) {
+            throw new IllegalStateException("Phase 1 has no successful quorum");
+        }
+        Map<Integer, List<DidaTradePaxos.AcceptedEntry>> entriesByInstance = new HashMap<>();
+
+        for (var promise : promises.values()) {
+            Set<Integer> seenInstances = new HashSet<>();
+
+            for (var entry : promise.getAcceptedEntriesList()) {
+                if (!seenInstances.add(entry.getInstance())) {
+                    throw new IllegalStateException("Duplicate instance in acceptor promise");
+                }
+                int instance = entry.getInstance();
+
+                List<DidaTradePaxos.AcceptedEntry> entries = entriesByInstance.get(instance);
+
+                if (entries == null) {
+                    entries = new ArrayList<>();
+                    entriesByInstance.put(instance, entries);
+                }
+
+                entries.add(entry);
+            }
+        }
+
+        int n = acceptors.size();
+        // Minimum overlap of this recovery quorum with a previous Fast decision.
+        int threshold = quorum + fastQuorum - n;
+
+        Map<Integer, DidaTradePaxos.AcceptedEntry> recovered = new HashMap<>();
+
+        for (var group : entriesByInstance.entrySet()) {
+
+            int highestBallot = -1;
+
+            for (DidaTradePaxos.AcceptedEntry entry : group.getValue()) {
+                if (entry.getValballot() > highestBallot) {
+                    highestBallot = entry.getValballot();
+                }
+            }
+
+            Map<Integer, Integer>                      votes      = new HashMap<>();
+            Map<Integer, DidaTradePaxos.AcceptedEntry> candidates = new TreeMap<>();
+
+            for (var entry : group.getValue()) {
+                if (entry.getValballot() != highestBallot) continue;
+
+                votes.merge(entry.getValue(), 1, Integer::sum);
+                candidates.put(entry.getValue(), entry);
+            }
+
+            int chosenValue = candidates.keySet().iterator().next();
+
+            for (var vote : votes.entrySet()) {
+                if (vote.getValue() >= threshold) {
+                    chosenValue = vote.getKey();
+                    break;
+                }
+            }
+
+            recovered.put(group.getKey(), candidates.get(chosenValue));
+        }
+
+        return recovered;
     }
 }

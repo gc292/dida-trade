@@ -2,12 +2,7 @@ package didatrade.server;
 
 import didatrade.DidaTradePaxos;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Hashtable;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Supplier;
 
 
@@ -16,28 +11,133 @@ public class PaxosLog {
         PENDING, DECIDED, COLLISION
     }
 
-    /** TODO FAST-02: authorize one position/ballot; ANY must not become an accepted value. */
+    private final Map<Integer, Map<Integer, Map<Integer, Integer>>> fastLearnVotes =
+            new HashMap<>();
+
     public synchronized boolean authorizeFastInstance(int position, int ballot) {
-        throw new UnsupportedOperationException("TODO FAST-02: authorize Fast position");
+        PaxosInstance entry = testAndSetEntry(position);
+
+        if (entry.decided) return false;
+
+        if (ballot < entry.authorized_ballot || ballot < entry.write_ballot) {
+            return false;
+        }
+
+        if (entry.write_ballot == ballot) {
+            return entry.authorized_ballot == ballot;
+        }
+
+        entry.authorized_ballot = ballot;
+        return true;
     }
 
-    /** TODO FAST-02: require authorization and preserve the first vote in this ballot. */
     public synchronized boolean acceptFastProposal(int position, int ballot, int commandId) {
-        throw new UnsupportedOperationException("TODO FAST-02: accept direct proposal");
+        PaxosInstance entry = testAndSetEntry(position);
+
+        if (entry.authorized_ballot != ballot) return false;
+
+        return accept(position, ballot, commandId);
     }
 
-    /** TODO FAST-06: first authorized, undecided position without a local vote in this ballot. */
     public synchronized Integer getNextFastInstance(int ballot, int firstPosition) {
-        throw new UnsupportedOperationException("TODO FAST-06: find eligible Fast position");
+        Integer next = null;
+
+        for (PaxosInstance entry : log.values()) {
+            if (entry.instance_nb < firstPosition) continue;
+            if (entry.decided) continue;
+            if (entry.authorized_ballot != ballot) continue;
+            if (entry.write_ballot >= ballot) continue;
+
+            if (next == null || entry.instance_nb < next) {
+                next = entry.instance_nb;
+            }
+        }
+
+        return next;
     }
 
-    /** TODO FAST-05: count distinct acceptors per value/ballot; return collision evidence. */
-    public synchronized FastLearnResult recordFastLearn(
-            int position, int ballot, int commandId, int acceptor, int quorum) {
-        throw new UnsupportedOperationException("TODO FAST-05: record Fast learner evidence");
+    public synchronized FastLearnResult recordFastLearn(int position, int ballot, int commandId, int acceptor, int quorum, List<Integer> configuredAcceptors) {
+
+
+        Set<Integer> members = new HashSet<>(configuredAcceptors);
+
+        if (members.isEmpty()
+                || members.size() != configuredAcceptors.size()
+                || quorum <= members.size() / 2
+                || quorum > members.size()) {
+            throw new IllegalArgumentException("Invalid Fast learner configuration");
+        }
+
+        if (!members.contains(acceptor)) {
+            throw new IllegalArgumentException("Vote from an acceptor outside the configuration");
+        }
+
+        if (position < 0 || ballot < 0) {
+            throw new IllegalArgumentException("Invalid position or ballot");
+        }
+
+        Map<Integer, Map<Integer, Integer>> byBallot = fastLearnVotes.get(position);
+
+        if (byBallot == null) {
+            byBallot = new HashMap<>();
+            fastLearnVotes.put(position, byBallot);
+        }
+
+        Map<Integer, Integer> votesByAcceptor = byBallot.get(ballot);
+
+        if (votesByAcceptor == null) {
+            votesByAcceptor = new HashMap<>();
+            byBallot.put(ballot, votesByAcceptor);
+        }
+
+        Integer previousVote = votesByAcceptor.get(acceptor);
+
+        if (previousVote != null && previousVote.intValue() != commandId) {
+            throw new IllegalStateException("Acceptor changed its vote in the same ballot");
+        }
+
+        votesByAcceptor.put(acceptor, commandId);
+
+        Map<Integer, Integer> counts = new HashMap<>();
+
+        for (int value : votesByAcceptor.values()) {
+            Integer count = counts.get(value);
+
+            if (count == null) {
+                counts.put(value, 1);
+            } else {
+                counts.put(value, count + 1);
+            }
+        }
+
+        int maxVotes = 0;
+
+        for (Map.Entry<Integer, Integer> count : counts.entrySet()) {
+            int value         = count.getKey();
+            int numberOfVotes = count.getValue();
+
+            if (numberOfVotes >= quorum) {
+                decideEntry(position, ballot, value);
+                return FastLearnResult.DECIDED;
+            }
+
+            maxVotes = Math.max(maxVotes, numberOfVotes);
+        }
+
+        if (isDecided(position)) {
+            return FastLearnResult.PENDING;
+        }
+
+        int missingVotes = members.size() - votesByAcceptor.size();
+
+        if (maxVotes + missingVotes < quorum) {
+            return FastLearnResult.COLLISION;
+        }
+
+        return FastLearnResult.PENDING;
     }
 
-    private Hashtable<Integer, PaxosInstance> log;
+    private Hashtable<Integer, PaxosInstance>        log;
     private Map<Integer, Map<Integer, LearnedValue>> learnedValues;
 
     private static final class LearnedValue {
@@ -82,7 +182,7 @@ public class PaxosLog {
         if (ballot == entry.write_ballot && entry.accepted_command_id != commandId) return false;
 
         entry.accepted_command_id = commandId;
-        entry.write_ballot = ballot;
+        entry.write_ballot        = ballot;
         return true;
     }
 

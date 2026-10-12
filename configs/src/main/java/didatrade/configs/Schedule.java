@@ -22,4 +22,12 @@ public abstract class Schedule {
     abstract Integer quorum(int ballot);
 
     abstract boolean fastpaxos(int ballot);
+
+    // Fast decision quorum for the acceptors of this ballot.
+    Integer superMajority(int ballot) {
+        int n = acceptors(ballot).size();
+        return n - (n - 1) / 3;
+    }
+
+    abstract Integer recoveryQuorum(int ballot);
 }

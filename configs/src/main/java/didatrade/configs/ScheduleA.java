@@ -45,6 +45,11 @@ public class ScheduleA extends Schedule {
         return new Integer(2);
     }
 
+    @Override
+    public Integer recoveryQuorum(int ballot) {
+        return quorum(ballot);
+    }
+
     public boolean fastpaxos(int ballot) {
         return ((ballot % 3) == 0);
     }

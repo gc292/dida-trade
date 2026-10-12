@@ -49,8 +49,13 @@ public class ScheduleC extends Schedule {
     }
 
     public Integer quorum(int ballot) {
-        if (ballot < 2) return new Integer(2);
-        else return new Integer(3);
+        return 3;
+    }
+
+    @Override
+    public Integer recoveryQuorum(int ballot) {
+        // Conservative quorum for recovery across Classic and Fast rounds.
+        return superMajority(ballot);
     }
 
     public boolean fastpaxos(int ballot) {
