@@ -3,6 +3,7 @@ package didatrade.server;
 import java.util.ArrayList;
 
 import didatrade.util.PhaseOneResponseProcessor;
+import didatrade.util.FastPhaseOneResponseProcessor;
 import didatrade.util.PhaseTwoResponseProcessor;
 import didatrade.util.PhaseTwoAttempt;
 import didatrade.util.GenericResponseCollector;
@@ -133,6 +134,41 @@ public class DidaTradeServerState {
 
         phase_one_collector.waitUntilDone();
         return phase_one_processor;
+    }
+
+    /** TODO FAST-01: explicit Schedule B Fast quorum; never use the Classic quorum by accident. */
+    public int getFastQuorum(int ballot) {
+        throw new UnsupportedOperationException("TODO FAST-01: Schedule B Fast quorum");
+    }
+
+    /** TODO FAST-04: reuse promise transport, but collect with the Fast recovery processor. */
+    public FastPhaseOneResponseProcessor runFastPhaseOne(int ballot) {
+        throw new UnsupportedOperationException("TODO FAST-04: Fast Phase 1 transport");
+    }
+
+    /** TODO FAST-04: send a fixed recovered value with the explicit Fast quorum. */
+    public PhaseTwoAttempt startFastPhaseTwo(int instance, int ballot, int value) {
+        throw new UnsupportedOperationException("TODO FAST-04: concrete Fast Phase 2");
+    }
+
+    /** TODO FAST-06: send ANY; completing this attempt authorizes a slot, not a command. */
+    public PhaseTwoAttempt startFastAny(int instance, int ballot) {
+        throw new UnsupportedOperationException("TODO FAST-06: ANY transport");
+    }
+
+    /** TODO FAST-02: promise check and ANY authorization must share the acceptor monitor. */
+    public synchronized PhaseTwoAcceptorResult authorizeFastInstance(int instance, int ballot) {
+        throw new UnsupportedOperationException("TODO FAST-02: Fast acceptor authorization");
+    }
+
+    /** TODO FAST-02: clients cannot raise promises; require current ballot plus authorization. */
+    public synchronized PhaseTwoAcceptorResult acceptFastProposal(int instance, int ballot, int value) {
+        throw new UnsupportedOperationException("TODO FAST-02: atomic Fast proposal");
+    }
+
+    /** TODO FAST-05: extract the existing acceptor notification for both voting origins. */
+    public void notifyLearners(int instance, int ballot, int value) {
+        throw new UnsupportedOperationException("TODO FAST-05: reusable Learn notification");
     }
 
     public PhaseTwoResponseProcessor runPhaseTwo(int instance, int ballot, int value) {
