@@ -53,7 +53,7 @@ public class DidaTradeMainServiceImpl extends DidaTradeMainServiceGrpc.DidaTrade
         // for debug purposes
         System.out.println("Result is ready for open request with reqid " + reqid);
 
-        DidaTradeMain.PopulateReply response = DidaTradeMain.PopulateReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.PopulateReply response = DidaTradeMain.PopulateReply.newBuilder().setReqid(reqid).setResult(result).setAppliedVersion(this.server_state.getAppliedVersion()).build();
         responseObserver.onNext(response);
         responseObserver.onCompleted();
     }
@@ -87,7 +87,7 @@ public class DidaTradeMainServiceImpl extends DidaTradeMainServiceGrpc.DidaTrade
         // for debug purposes
         System.out.println("Result is ready for add request with reqid " + reqid);
 
-        DidaTradeMain.AddUserReply response = DidaTradeMain.AddUserReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.AddUserReply response = DidaTradeMain.AddUserReply.newBuilder().setReqid(reqid).setResult(result).setAppliedVersion(this.server_state.getAppliedVersion()).build();
 
         responseObserver.onNext(response);
         responseObserver.onCompleted();
@@ -120,7 +120,7 @@ public class DidaTradeMainServiceImpl extends DidaTradeMainServiceGrpc.DidaTrade
         // for debug purposes
         System.out.println("Result is ready for add request with reqid " + reqid);
 
-        DidaTradeMain.BuyReply response = DidaTradeMain.BuyReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.BuyReply response = DidaTradeMain.BuyReply.newBuilder().setReqid(reqid).setResult(result).setAppliedVersion(this.server_state.getAppliedVersion()).build();
 
         responseObserver.onNext(response);
         responseObserver.onCompleted();
@@ -154,7 +154,7 @@ public class DidaTradeMainServiceImpl extends DidaTradeMainServiceGrpc.DidaTrade
         // for debug purposes
         System.out.println("Result is ready for add request with reqid " + reqid);
 
-        DidaTradeMain.SellReply response = DidaTradeMain.SellReply.newBuilder().setReqid(reqid).setResult(result).build();
+        DidaTradeMain.SellReply response = DidaTradeMain.SellReply.newBuilder().setReqid(reqid).setResult(result).setAppliedVersion(this.server_state.getAppliedVersion()).build();
 
         responseObserver.onNext(response);
         responseObserver.onCompleted();
@@ -174,21 +174,25 @@ public class DidaTradeMainServiceImpl extends DidaTradeMainServiceGrpc.DidaTrade
         // for debug purposes
         System.out.println("reqid " + reqid + " userid " + uid);
 
-        DidaTradeCommand command = new DidaTradeCommand(DidaTradeAction.BALANCE, uid);
+        DidaTradeMain.BalanceReply response;
+        try {
+            response = this.server_state.readCausalBalance(
+                    reqid, uid, request.getMinVersion());
 
-        // for debug purposes
-        System.out.println("Adding balance request with reqid " + reqid + " to pending");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            responseObserver.onError(
+                    io.grpc.Status.CANCELLED
+                            .withDescription("Balance interrupted while waiting")
+                            .asRuntimeException());
+            return;
 
-        RequestRecord request_record = registerRequest(reqid, command, responseObserver);
-        if (request_record == null) return;
-        this.server_state.main_loop.wakeup();
-        boolean result = request_record.waitForResponse();
+        } catch (io.grpc.StatusRuntimeException e) {
+            responseObserver.onError(e);
+            return;
+        }
 
-        // for debug purposes
-        System.out.println("Result is ready for add request with reqid " + reqid);
-
-        int                        balance  = request_record.getRequest().getQuantity();
-        DidaTradeMain.BalanceReply response = DidaTradeMain.BalanceReply.newBuilder().setReqid(reqid).setResult(result).setBalance(balance).build();
+        System.out.println("Result is ready for balance request with reqid " + reqid);
 
         responseObserver.onNext(response);
         responseObserver.onCompleted();

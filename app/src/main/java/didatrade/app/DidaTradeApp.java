@@ -28,6 +28,7 @@ public class DidaTradeApp {
     private             int                                                 n_servers;
     private             int                                                 client_id;
     private             int                                                 sequence_number;
+    private             long                                                causalVersion = 0;
     private             int                                                 responses_needed;
     private             String[]                                            targets;
     private             ManagedChannel[]                                    channels;
@@ -79,6 +80,7 @@ public class DidaTradeApp {
             Iterator<DidaTradeMain.PopulateReply> populate_iterator = populate_responses.iterator();
             DidaTradeMain.PopulateReply           populate_reply    = populate_iterator.next();
             result = populate_reply.getResult();
+            causalVersion = Math.max(causalVersion, populate_reply.getAppliedVersion());
             if (result) {
                 System.out.println("User DB has been populated with " + quantity + "users.\n");
             } else {
@@ -112,6 +114,7 @@ public class DidaTradeApp {
             Iterator<DidaTradeMain.AddUserReply> adduser_iterator = adduser_responses.iterator();
             DidaTradeMain.AddUserReply           adduser_reply    = adduser_iterator.next();
             result = adduser_reply.getResult();
+            causalVersion = Math.max(causalVersion, adduser_reply.getAppliedVersion());
             if (result) {
                 System.out.println("User " + uid + " added with cash " + cash + "and stock" + stock + "% of stock\n");
             } else {
@@ -144,6 +147,7 @@ public class DidaTradeApp {
             Iterator<DidaTradeMain.SellReply> sell_iterator = sell_responses.iterator();
             DidaTradeMain.SellReply           sell_reply    = sell_iterator.next();
             result = sell_reply.getResult();
+            causalVersion = Math.max(causalVersion, sell_reply.getAppliedVersion());
             if (result) {
                 System.out.println("User " + uid + " did sell " + quantity + "% of stock\n");
             } else {
@@ -177,6 +181,7 @@ public class DidaTradeApp {
             Iterator<DidaTradeMain.BuyReply> buy_iterator = buy_responses.iterator();
             DidaTradeMain.BuyReply           buy_reply    = buy_iterator.next();
             result = buy_reply.getResult();
+            causalVersion = Math.max(causalVersion, buy_reply.getAppliedVersion());
             if (result) {
                 System.out.println("User " + uid + " did spend " + quantity + "% of balance\n");
             } else {
@@ -196,6 +201,7 @@ public class DidaTradeApp {
         DidaTradeMain.BalanceRequest.Builder balance_request = DidaTradeMain.BalanceRequest.newBuilder();
         balance_request.setReqid(reqid);
         balance_request.setUserid(uid);
+        balance_request.setMinVersion(causalVersion);
 
 
         ArrayList<DidaTradeMain.BalanceReply>                balance_responses = new ArrayList<DidaTradeMain.BalanceReply>();
@@ -203,13 +209,16 @@ public class DidaTradeApp {
 
         for (int i = 0; i < n_servers; i++) {
             CollectorStreamObserver<DidaTradeMain.BalanceReply> balance_observer = new CollectorStreamObserver<DidaTradeMain.BalanceReply>(balance_collector);
-            async_stubs[i].balance(balance_request.build(), balance_observer);
+            async_stubs[i]
+                    .withDeadlineAfter(12, java.util.concurrent.TimeUnit.SECONDS)
+                    .balance(balance_request.build(), balance_observer);
         }
         balance_collector.waitForQuorum(responses_needed);
         if (balance_responses.size() >= responses_needed) {
             Iterator<DidaTradeMain.BalanceReply> balance_iterator = balance_responses.iterator();
             DidaTradeMain.BalanceReply           balance_reply    = balance_iterator.next();
             result = balance_reply.getResult();
+            causalVersion = Math.max(causalVersion, balance_reply.getAppliedVersion());
             if (result) {
                 balance = balance_reply.getBalance();
                 System.out.println("User " + uid + " balance is " + balance + "\n");

@@ -1,6 +1,7 @@
 package didatrade.server;
 
 import didatrade.DidaTradePaxos;
+import didatrade.DidaTradeMain;
 import didatrade.DidaTradeMaster;
 import didatrade.DidaTradeMasterServiceGrpc;
 import didatrade.DidaTradePaxosServiceGrpc;
@@ -41,8 +42,8 @@ public class DidaTradeServerState {
     private int     current_ballot;
     private int     completed_ballot;
     private int     debug_mode;
+    private long    appliedVersion = 0;
     private final boolean fastpaxos_on;
-
     private volatile boolean slowMode;
     private          boolean frozen;
 
@@ -354,39 +355,78 @@ public class DidaTradeServerState {
 
         DidaTradeAction action = command.getAction();
 
-        // System.out.println("Action  = " + action);
-        switch (action) {
-            case DidaTradeAction.POPULATE:
-                result = this.trade_manager.populate(command.getQuantity());
-                break;
-            case DidaTradeAction.ADDUSER:
-                result = this.trade_manager.add_user(command.getUserId(), command.getQuantity(), command.getStock());
-                break;
-            case DidaTradeAction.SELL:
-                result = this.trade_manager.sell(command.getUserId(), command.getQuantity());
-                break;
-            case DidaTradeAction.BUY:
-                result = this.trade_manager.acquire(command.getUserId(), command.getQuantity());
-                break;
-            case DidaTradeAction.BALANCE:
-                balance = this.trade_manager.balance(command.getUserId());
-                command.setQuantity(balance);
-                result = (balance != -1);
-                break;
-            case DidaTradeAction.DUMP:
-                this.trade_manager.dump();
-                result = true;
-                break;
-            default:
-                result = false;
-                System.err.println("*** Unknown command ****");
-                break;
+        synchronized (trade_manager) {
+            // System.out.println("Action  = " + action);
+            switch (action) {
+                case DidaTradeAction.POPULATE:
+                    result = this.trade_manager.populate(command.getQuantity());
+                    break;
+                case DidaTradeAction.ADDUSER:
+                    result = this.trade_manager.add_user(command.getUserId(), command.getQuantity(), command.getStock());
+                    break;
+                case DidaTradeAction.SELL:
+                    result = this.trade_manager.sell(command.getUserId(), command.getQuantity());
+                    break;
+                case DidaTradeAction.BUY:
+                    result = this.trade_manager.acquire(command.getUserId(), command.getQuantity());
+                    break;
+                case DidaTradeAction.BALANCE:
+                    balance = this.trade_manager.balance(command.getUserId());
+                    command.setQuantity(balance);
+                    result = (balance != -1);
+                    break;
+                case DidaTradeAction.DUMP:
+                    this.trade_manager.dump();
+                    result = true;
+                    break;
+                default:
+                    result = false;
+                    System.err.println("*** Unknown command ****");
+                    break;
+            }
+            appliedVersion++;
+            trade_manager.notifyAll();
         }
 
         // sending response
         System.out.println("Setting response for command with id = " + request_record.getId() + " with result = " + result);
-        request_record.setResponse(result);
         this.req_history.moveToProcessed(request_record.getId());
+        request_record.setResponse(result);
+    }
+
+    public long getAppliedVersion() {
+        synchronized (trade_manager) {
+            return appliedVersion;
+        }
+    }
+
+    public DidaTradeMain.BalanceReply readCausalBalance(
+            int reqid, int userid, long minVersion) throws InterruptedException {
+
+        synchronized (trade_manager) {
+            while (appliedVersion < minVersion) {
+                if (io.grpc.Context.current().isCancelled()) {
+                    throw io.grpc.Status.CANCELLED
+                            .withDescription("Balance cancelled while waiting")
+                            .asRuntimeException();
+                }
+
+                trade_manager.wait(100);
+            }
+
+            if (io.grpc.Context.current().isCancelled()) {
+                throw io.grpc.Status.CANCELLED
+                        .withDescription("Balance cancelled")
+                        .asRuntimeException();
+            }
+            int balance = trade_manager.balance(userid);
+            return DidaTradeMain.BalanceReply.newBuilder()
+                    .setReqid(reqid)
+                    .setResult(balance != -1)
+                    .setBalance(balance)
+                    .setAppliedVersion(appliedVersion)
+                    .build();
+        }
     }
 
     public synchronized int getCurrentBallot() {
