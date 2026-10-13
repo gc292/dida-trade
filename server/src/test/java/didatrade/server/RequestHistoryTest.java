@@ -8,6 +8,35 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 public class RequestHistoryTest extends TestCase {
+    public void testPendingSelectionFollowsArrivalRatherThanRequestId() {
+        RequestHistory history = new RequestHistory();
+        RequestRecord first = record(900);
+        RequestRecord second = record(100);
+        history.addToPending(900, first);
+        history.addToPending(100, second);
+        history.addToPending(500, record(500));
+        assertSame(first, history.getFirstPending());
+        assertSame(second, history.getFirstPendingExcluding(java.util.Set.of(900)));
+        assertNull(history.getFirstPendingExcluding(java.util.Set.of(900, 100, 500)));
+        history.moveToProcessed(900);
+        assertSame(second, history.getFirstPending());
+    }
+
+    public void testExcludedLoserAndRetransmissionKeepOriginalArrivalPriority() {
+        RequestHistory history = new RequestHistory();
+        RequestRecord loser = record(900);
+        RequestRecord later = record(100);
+        history.addToPending(900, loser);
+        history.addToPending(100, later);
+        assertSame(later, history.getFirstPendingExcluding(java.util.Set.of(900)));
+        for (int id = 1000; id < 1100; id++) history.addToPending(id, record(id));
+        assertSame(loser, history.addToPending(900, record(900)));
+        assertSame(loser, history.getFirstPendingExcluding(java.util.Set.of()));
+        history.moveToProcessed(900);
+        assertSame(loser, history.addToPending(900, record(900)));
+        assertSame(later, history.getFirstPending());
+    }
+
     private RequestRecord record(int id) {
         return new RequestRecord(id, new DidaTradeCommand(DidaTradeAction.BUY, 1, 50));
     }

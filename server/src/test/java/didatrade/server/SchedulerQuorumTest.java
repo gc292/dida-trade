@@ -46,6 +46,23 @@ public class SchedulerQuorumTest extends TestCase {
         }
     }
 
+    public void testQuorumIntersectionsWithinEachConfiguration() {
+        for (char option : new char[] {'A', 'B', 'C'}) {
+            ConfigurationScheduler scheduler = new ConfigurationScheduler(option);
+            for (int ballot = 0; ballot < 5; ballot++) {
+                int n = scheduler.acceptors(ballot).size();
+                int classic = scheduler.quorum(ballot);
+                int recovery = scheduler.recoveryQuorum(ballot);
+                int fast = scheduler.superMajority(ballot);
+                assertTrue(2 * classic > n);
+                assertTrue(recovery + classic > n);
+                assertTrue(2 * fast > n);
+                assertTrue(recovery + 2 * fast > 2 * n);
+            }
+        }
+        // These intersections assume one acceptor set; they do not validate C state transfer.
+    }
+
     public void testConventionalPhaseOneUsesRecoveryQuorumRatherThanDecisionQuorum() {
         ConfigurationScheduler scheduler = new ConfigurationScheduler('B');
         PhaseOneResponseProcessor processor = new PhaseOneResponseProcessor(scheduler, 0, 1);

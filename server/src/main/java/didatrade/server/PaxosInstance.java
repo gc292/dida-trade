@@ -11,14 +11,8 @@ public class PaxosInstance {
     boolean decided;
 
     public PaxosInstance() {
-        this.instance_nb       = 0;
-        this.command_id        = 0;
-        this.write_ballot      = -1;
-        this.decision_ballot   = -1;
-        this.decided           = false;
-        this.authorized_ballot = -1;
+        this(0);
     }
-
 
     public PaxosInstance(int id) {
         this.instance_nb       = id;

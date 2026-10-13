@@ -12,22 +12,46 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 public class FastAcceptorTest extends TestCase {
-    public void testNextFastPositionIsSmallestEligibleAndRespectsLowerBound() {
+    public void testOnlyPerPositionRecoveryReleasesHistoricalReservation() {
+        PaxosLog log = new PaxosLog();
+        assertTrue(log.authorizeFastInstance(0, 0));
+        assertTrue(log.acceptFastProposal(0, 0, 101));
+        assertTrue(log.getReservedCommandIds(1).contains(101));
+        assertFalse(log.isReservationSuperseded(0, 0, 101));
+        assertTrue(log.authorizeFastInstance(1, 1));
+        assertTrue(log.getReservedCommandIds(1).contains(101));
+        assertTrue(log.authorizeFastInstance(0, 1));
+        assertFalse(log.getReservedCommandIds(1).contains(101));
+        assertTrue(log.isReservationSuperseded(0, 0, 101));
+        assertSnapshot(log, 0, 0, 101);
+        assertTrue(log.acceptFastProposal(0, 1, 101));
+        assertTrue(log.getReservedCommandIds(1).contains(101));
+        assertTrue(log.accept(0, 2, 201));
+        assertFalse(log.getReservedCommandIds(2).contains(101));
+        assertTrue(log.getReservedCommandIds(2).contains(201));
+    }
+
+    public void testNextFastPositionWaitsForEarlierAuthorizationAndRespectsLowerBound() {
         PaxosLog log = new PaxosLog();
         assertNull(log.getNextFastInstance(1, 0));
         assertTrue(log.authorizeFastInstance(7, 1));
         assertTrue(log.authorizeFastInstance(2, 1));
         assertTrue(log.authorizeFastInstance(5, 1));
-        assertEquals(2, log.getNextFastInstance(1, 0).intValue());
-        assertEquals(5, log.getNextFastInstance(1, 3).intValue());
-        assertNull(log.getNextFastInstance(1, 8));
-        assertNull(log.getNextFastInstance(2, 0));
-        assertTrue(log.acceptFastProposal(2, 1, 10));
-        assertEquals(5, log.getNextFastInstance(1, 0).intValue());
-        log.decideEntry(5, 1, 20);
-        assertEquals(7, log.getNextFastInstance(1, 0).intValue());
-        assertTrue(log.acceptFastProposal(7, 1, 30));
         assertNull(log.getNextFastInstance(1, 0));
+        assertEquals(2, log.getNextFastInstance(1, 2).intValue());
+        assertNull(log.getNextFastInstance(1, 3));
+        assertEquals(5, log.getNextFastInstance(1, 5).intValue());
+        assertNull(log.getNextFastInstance(1, 8));
+        assertNull(log.getNextFastInstance(2, 2));
+        assertTrue(log.acceptFastProposal(2, 1, 10));
+        log.decideEntry(3, 1, 30);
+        log.decideEntry(4, 1, 40);
+        assertEquals(5, log.getNextFastInstance(1, 2).intValue());
+        log.decideEntry(5, 1, 20);
+        log.decideEntry(6, 1, 60);
+        assertEquals(7, log.getNextFastInstance(1, 2).intValue());
+        assertTrue(log.acceptFastProposal(7, 1, 70));
+        assertNull(log.getNextFastInstance(1, 2));
     }
 
     public void testHigherVoteInvalidatesOldSlotButNewAuthorizationCanUsePreviousVoteSlot() {
@@ -97,6 +121,15 @@ public class FastAcceptorTest extends TestCase {
         assertEquals(10, log.getDecidedCommandId(0).intValue());
     }
 
+    public void testDecisionBeforeLocalVoteRejectsEvenTheMatchingValue() {
+        PaxosLog log = new PaxosLog();
+        assertTrue(log.authorizeFastInstance(0, 1));
+        log.decideEntry(0, 1, 10);
+        assertFalse(log.acceptFastProposal(0, 1, 10));
+        assertTrue(log.getAcceptedEntries().isEmpty());
+        assertEquals(10, log.getDecidedCommandId(0).intValue());
+    }
+
     public void testConcurrentDifferentProposalsProduceExactlyOneVote() throws Exception {
         PaxosLog log = new PaxosLog();
         assertTrue(log.authorizeFastInstance(0, 1));
@@ -127,6 +160,10 @@ public class FastAcceptorTest extends TestCase {
         runIsolated("transport");
     }
 
+    public void testFastLearnWaitsForARecoveringChannelInsteadOfDroppingTheVote() throws Exception {
+        runIsolated("late-learner");
+    }
+
     private static void assertSnapshot(PaxosLog log, int position, int ballot, int value) {
         var entries = log.getAcceptedEntries();
         assertEquals(1, entries.size());
@@ -154,13 +191,15 @@ public class FastAcceptorTest extends TestCase {
         }
     }
 
-    // The real state starts a permanent worker; isolate its lifecycle from Surefire.
+    // Isolate gRPC channels and explicitly controlled component lifecycles from Surefire.
     public static void main(String[] args) {
         try {
-            DidaTradeServerState state = new DidaTradeServerState(19000, 0, 'B', ProtocolMode.CLASSIC);
+            ProtocolMode mode = args[0].equals("late-learner") ? ProtocolMode.FAST : ProtocolMode.CLASSIC;
+            DidaTradeServerState state = new DidaTradeServerState(19000, 0, 'B', mode, false);
             if (args[0].equals("promises")) checkPromisesAndQuorums(state);
             else if (args[0].equals("race")) checkPrepareRace(state);
             else if (args[0].equals("transport")) checkTransport(state);
+            else if (args[0].equals("late-learner")) checkLateLearner(state);
             else throw new IllegalArgumentException("Unknown scenario");
             System.exit(0);
         } catch (Throwable error) {
@@ -237,6 +276,32 @@ public class FastAcceptorTest extends TestCase {
             }
         } finally {
             pool.shutdownNow();
+        }
+    }
+
+    private static void checkLateLearner(DidaTradeServerState state) throws Exception {
+        int port;
+        try (java.net.ServerSocket reserved = new java.net.ServerSocket(0)) { port = reserved.getLocalPort(); }
+        state.channels[0].shutdownNow();
+        state.channels[0] = io.grpc.ManagedChannelBuilder.forAddress("localhost", port).usePlaintext().build();
+        state.async_stubs[0] = didatrade.DidaTradePaxosServiceGrpc.newStub(state.channels[0]);
+        io.grpc.Server server = null;
+        try {
+            state.channels[0].getState(true);
+            long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (state.channels[0].getState(false) != io.grpc.ConnectivityState.TRANSIENT_FAILURE) {
+                assertTrue("Channel must first observe an unavailable peer", System.nanoTime() < end);
+                Thread.sleep(10);
+            }
+            state.notifyLearners(0, 0, 101);
+            TransportAcceptor peer = new TransportAcceptor(0);
+            server = io.grpc.ServerBuilder.forPort(port).addService(peer).build().start();
+            assertTrue("The queued vote must reach the learner after its channel recovers",
+                    peer.learnReceived.await(5, TimeUnit.SECONDS));
+            assertEquals(101, peer.learnRequest.getValue());
+        } finally {
+            for (var channel : state.channels) channel.shutdownNow();
+            if (server != null) server.shutdownNow();
         }
     }
 

@@ -33,8 +33,11 @@ public class DidaTradeServer {
                 case "multi":
                     protocol = ProtocolMode.MULTI;
                     break;
+                case "fast":
+                    protocol = ProtocolMode.FAST;
+                    break;
                 default:
-                    System.err.println("Invalid protocol: use classic or multi.");
+                    System.err.println("Invalid protocol: use classic, multi or fast.");
                     return;
             }
         }
@@ -42,13 +45,18 @@ public class DidaTradeServer {
         // Check arguments.
         if (args.length < 3) {
             System.err.println("Argument(s) missing!");
-            System.err.printf("Usage: java %s baseport replica-id scheduler [classic|multi]\n", DidaTradeServer.class.getName());
+            System.err.printf("Usage: java %s baseport replica-id scheduler [classic|multi|fast]\n", DidaTradeServer.class.getName());
             return;
         }
 
         int  base_port = Integer.valueOf(args[0]);
         int  my_id     = Integer.valueOf(args[1]);
         char scheduler = args[2].charAt(0);
+
+        if (protocol == ProtocolMode.FAST && scheduler != 'B') {
+            System.err.println("Fast Paxos requires Schedule B.");
+            return;
+        }
 
         server_state = new DidaTradeServerState(base_port, my_id, scheduler, protocol);
 

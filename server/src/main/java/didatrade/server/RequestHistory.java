@@ -1,15 +1,16 @@
 package didatrade.server;
 
-import java.util.Enumeration;
 import java.util.Hashtable;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 
 public class RequestHistory {
-    private Hashtable<Integer, RequestRecord> pending;
-    private Hashtable<Integer, RequestRecord> processed;
+    private final Map<Integer, RequestRecord>       pending;
+    private       Hashtable<Integer, RequestRecord> processed;
 
     public RequestHistory() {
-        this.pending   = new Hashtable<Integer, RequestRecord>();
+        this.pending   = new LinkedHashMap<Integer, RequestRecord>();
         this.processed = new Hashtable<Integer, RequestRecord>();
     }
 
@@ -19,24 +20,19 @@ public class RequestHistory {
     }
 
     public synchronized RequestRecord getFirstPending() {
-        Enumeration<Integer> pendingids = this.pending.keys();
-        if (pendingids.hasMoreElements()) return this.pending.get(pendingids.nextElement());
-        else return null;
+        for (RequestRecord request : pending.values()) {
+            return request;
+        }
+        return null;
     }
 
     public synchronized RequestRecord getFirstPendingExcluding(Set<Integer> excludedIds) {
-        Enumeration<Integer> pendingids = this.pending.keys();
-
-        while (pendingids.hasMoreElements()) {
-            Integer id = pendingids.nextElement();
-
-            if (excludedIds.contains(id)) {
-                continue;
+        for (Map.Entry<Integer, RequestRecord> entry : pending.entrySet()) {
+            if (!excludedIds.contains(entry.getKey())) {
+                return entry.getValue();
             }
-
-            return this.pending.get(id);
         }
-        
+
         return null;
     }
 

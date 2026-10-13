@@ -31,7 +31,11 @@ public class DidaTradeMasterServiceImpl extends DidaTradeMasterServiceGrpc.DidaT
 
             this.server_state.main_loop.wakeup();
 
-            completed_ballot = this.server_state.waitForCompletedBallot(new_ballot);
+            if (this.server_state.getFastPaxosMode()) {
+                completed_ballot = this.server_state.getCompletedBallot();
+            } else {
+                completed_ballot = this.server_state.waitForCompletedBallot(new_ballot);
+            }
         } else {
             completed_ballot = this.server_state.getCompletedBallot();
         }
