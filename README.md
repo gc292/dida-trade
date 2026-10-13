@@ -129,7 +129,7 @@ Start the servers before starting clients.
 From the `server/` directory:
 
 ```bash
-mvn exec:java -Dexec.args="{port} {id} {scheduler} [classic|multi]"
+mvn exec:java -Dexec.args="{port} {id} {scheduler} [classic|multi|fast]"
 ```
 
 Arguments:
@@ -137,7 +137,7 @@ Arguments:
 * `{port}` — base port shared by all replicas.
 * `{id}` — replica identifier, starting at `0`.
 * `{scheduler}` — configuration schedule (`A` for the initial configuration).
-* Protocol mode is optional and defaults to `classic`; it is independent of the schedule.
+* Protocol mode is optional and defaults to `classic`; use `fast` with Schedule B.
 
 Step 2 implements Multi-Paxos with Schedule A. The `multi` mode performs Phase 1
 once per ballot, recovers previously accepted values by log position, and allows
@@ -149,6 +149,21 @@ Phase 2 attempts are retried without busy-waiting.
 The `classic` mode remains available and runs the original per-instance Paxos protocol.
 Existing `scripts/run.sh s0`, `s1`, and `s2` commands select Classic with Schedule A.
 To run Multi-Paxos directly, pass `multi` as the optional protocol argument.
+
+Step 3 provides Fast Paxos using `B fast`: start five replicas with IDs `0` to `4`.
+Fast decisions and recovery require four acceptors. The leader prepares each ballot
+and opens a window of four positions with ANY; acceptors vote directly on pending client
+requests. Proven collisions automatically start the next ballot and notify its leader.
+Timeouts retry the current ballot without triggering an election. Losing requests retain
+their arrival priority, and execution waits for the decided prefix and command payload.
+Fast mode requires Schedule B. In this mode, the console's new-ballot reply acknowledges
+the change immediately; its completed-ballot field still reports actual decisions.
+
+```bash
+# Run each replica in a separate terminal, from server/ with the environment loaded.
+mvn exec:java -Dexec.args="9000 0 B fast"
+# Repeat with IDs 1, 2, 3 and 4; configure clients and console with Schedule B.
+```
 
 The actual port used by a replica is:
 

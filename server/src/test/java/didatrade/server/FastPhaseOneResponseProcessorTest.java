@@ -147,6 +147,38 @@ public class FastPhaseOneResponseProcessorTest extends TestCase {
         assertEquals(20, processor.getRecoveredEntries().get(0).getValue());
     }
 
+    public void testEveryFiveAcceptorVoteAssignmentPreservesAnyPossibleDecision() {
+        // All 3^5 assignments of {no vote, X, Y}, with every possible four-node recovery quorum.
+        for (int assignment = 0; assignment < 243; assignment++) {
+            int[] values = new int[5];
+            int remaining = assignment;
+            int xVotes = 0;
+            int yVotes = 0;
+            for (int id = 0; id < 5; id++) {
+                int vote = remaining % 3;
+                remaining /= 3;
+                if (vote == 1) { values[id] = 20; xVotes++; }
+                if (vote == 2) { values[id] = 10; yVotes++; }
+            }
+            for (int omitted = 0; omitted < 5; omitted++) {
+                FastPhaseOneResponseProcessor processor = processor(5, 4);
+                boolean hasCandidate = false;
+                for (int id = 0; id < 5; id++) {
+                    if (id == omitted) continue;
+                    if (values[id] == 0) feed(processor, id);
+                    else {
+                        feed(processor, id, entry(0, values[id], 6));
+                        hasCandidate = true;
+                    }
+                }
+                Map<Integer, DidaTradePaxos.AcceptedEntry> recovered = processor.getRecoveredEntries();
+                assertEquals(hasCandidate, recovered.containsKey(0));
+                if (xVotes >= 4) assertEquals(20, recovered.get(0).getValue());
+                if (yVotes >= 4) assertEquals(10, recovered.get(0).getValue());
+            }
+        }
+    }
+
     public void testUnsafeRecoveryQuorumIsRejected() {
         try {
             new FastPhaseOneResponseProcessor(10, List.of(0, 1, 2, 3, 4), 2, 4);

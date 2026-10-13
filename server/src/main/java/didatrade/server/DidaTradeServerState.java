@@ -1,6 +1,8 @@
 package didatrade.server;
 
 import didatrade.DidaTradePaxos;
+import didatrade.DidaTradeMaster;
+import didatrade.DidaTradeMasterServiceGrpc;
 import didatrade.DidaTradePaxosServiceGrpc;
 import didatrade.configs.ConfigurationScheduler;
 import didatrade.core.TradeManager;
@@ -8,12 +10,14 @@ import didatrade.util.*;
 import io.grpc.Context;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.stub.StreamObserver;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 
@@ -37,7 +41,7 @@ public class DidaTradeServerState {
     private int     current_ballot;
     private int     completed_ballot;
     private int     debug_mode;
-    private boolean fastpaxos_on;
+    private final boolean fastpaxos_on;
 
     private volatile boolean slowMode;
     private          boolean frozen;
@@ -53,12 +57,20 @@ public class DidaTradeServerState {
     }
 
     public DidaTradeServerState(int port, int myself, char schedule, ProtocolMode protocol) {
+        this(port, myself, schedule, protocol, true);
+    }
+
+    // Component tests drive the selected loop explicitly without changing the protocol mode.
+    DidaTradeServerState(int port, int myself, char schedule, ProtocolMode protocol, boolean startWorker) {
+        if (protocol == ProtocolMode.FAST && schedule != 'B') {
+            throw new IllegalArgumentException("Fast Paxos requires Schedule B");
+        }
         this.trade_manager    = new TradeManager();
         this.scheduler        = new ConfigurationScheduler(schedule);
         this.base_port        = port;
         this.my_id            = myself;
         this.debug_mode       = 0;
-        this.fastpaxos_on     = false;
+        this.fastpaxos_on     = protocol == ProtocolMode.FAST;
         this.current_ballot   = 0;
         this.completed_ballot = -1;
         this.req_history      = new RequestHistory();
@@ -69,6 +81,7 @@ public class DidaTradeServerState {
         this.main_loop = switch (protocol) {
             case CLASSIC -> new MainLoop(this);
             case MULTI -> new MultiPaxosMainLoop(this);
+            case FAST -> new FastPaxosMainLoop(this, 4);
         };
 
         // populate manager
@@ -95,8 +108,10 @@ public class DidaTradeServerState {
              this.async_stubs[i] = DidaTradePaxosServiceGrpc.newStub(this.channels[i]);
 
         // start worker
-        this.main_loop_worker = new Thread(main_loop);
-        this.main_loop_worker.start();
+        if (startWorker) {
+            this.main_loop_worker = new Thread(main_loop);
+            this.main_loop_worker.start();
+        }
     }
 
     public PhaseOneResponseProcessor runPhaseOne(
@@ -187,11 +202,26 @@ public class DidaTradeServerState {
 
         for (int acceptor : acceptors) {
             CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> observer =
-                    new CollectorStreamObserver<>(collector);
+                    new CollectorStreamObserver<>(collector) {
+                        private void authorizationFailed() {
+                            if (request.getAny() && main_loop instanceof FastPaxosMainLoop loop) {
+                                loop.onAuthorizationFailure(request.getInstance(), request.getRequestballot());
+                            }
+                        }
+                        @Override public void onNext(DidaTradePaxos.PhaseTwoReply reply) {
+                            if (!reply.getAccepted()) authorizationFailed();
+                            super.onNext(reply);
+                        }
+                        @Override public void onError(Throwable error) {
+                            authorizationFailed();
+                            super.onError(error);
+                        }
+                    };
 
-            async_stubs[acceptor]
-                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                    .phasetwo(request, observer);
+            DidaTradePaxosServiceGrpc.DidaTradePaxosServiceStub stub = async_stubs[acceptor]
+                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (request.getAny()) stub = stub.withWaitForReady();
+            stub.phasetwo(request, observer);
         }
 
         return new PhaseTwoAttempt(collector, processor);
@@ -208,7 +238,7 @@ public class DidaTradeServerState {
     }
 
     public synchronized PhaseTwoAcceptorResult acceptFastProposal(int instance, int ballot, int value) {
-        if (ballot != current_ballot) {
+        if (frozen || ballot != current_ballot) {
             return new PhaseTwoAcceptorResult(false, current_ballot);
         }
 
@@ -252,7 +282,10 @@ public class DidaTradeServerState {
             GenericResponseCollector<DidaTradePaxos.LearnReply> learn_collector = new GenericResponseCollector<DidaTradePaxos.LearnReply>(learn_responses, n_targets);
             for (int i = 0; i < n_targets; i++) {
                 CollectorStreamObserver<DidaTradePaxos.LearnReply> learn_observer = new CollectorStreamObserver<DidaTradePaxos.LearnReply>(learn_collector);
-                this.async_stubs[learners.get(i)].learn(learn_request, learn_observer);
+                DidaTradePaxosServiceGrpc.DidaTradePaxosServiceStub learnerStub = this.async_stubs[learners.get(i)];
+                // A startup connection failure must not permanently lose a Fast vote.
+                if (getFastPaxosMode()) learnerStub = learnerStub.withWaitForReady();
+                learnerStub.learn(learn_request, learn_observer);
             }
             // System.out.println("Learn request completed for instance = " + instance);
         });
@@ -360,8 +393,32 @@ public class DidaTradeServerState {
         return this.current_ballot;
     }
 
-    public synchronized void setCurrentBallot(int ballot) {
-        if (ballot > this.current_ballot) this.current_ballot = ballot;
+    public void setCurrentBallot(int ballot) {
+        boolean wake;
+        synchronized (this) {
+            wake = ballot > current_ballot;
+            if (wake) current_ballot = ballot;
+            wake = wake && fastpaxos_on;
+        }
+        if (wake) main_loop.wakeup();
+    }
+
+    synchronized boolean advanceFastBallotIfCurrent(int ballot) {
+        if (current_ballot != ballot) return false;
+        current_ballot = ballot + 1;
+        return true;
+    }
+
+    void notifyFastLeader(int ballot, Consumer<Boolean> completion) {
+        DidaTradeMaster.NewBallotRequest request = DidaTradeMaster.NewBallotRequest.newBuilder()
+                .setNewballot(ballot).setCompletedballot(getCompletedBallot()).build();
+        DidaTradeMasterServiceGrpc.newStub(channels[scheduler.leader(ballot)])
+                .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .newballot(request, new StreamObserver<>() {
+                    @Override public void onNext(DidaTradeMaster.NewBallotReply reply) {}
+                    @Override public void onError(Throwable error) { completion.accept(false); }
+                    @Override public void onCompleted() { completion.accept(true); }
+                });
     }
 
     public synchronized int getCompletedBallot() {
@@ -399,12 +456,8 @@ public class DidaTradeServerState {
         return this.completed_ballot;
     }
 
-    public synchronized boolean getFastPaxosMode() {
+    public boolean getFastPaxosMode() {
         return this.fastpaxos_on;
-    }
-
-    public synchronized void setFastPaxosMode(boolean mode) {
-        this.fastpaxos_on = mode;
     }
 
     public synchronized int getDebugMode() {
@@ -466,5 +519,6 @@ public class DidaTradeServerState {
     public synchronized void unfreeze() {
         this.frozen = false;
         notifyAll();
+        if (fastpaxos_on) main_loop.wakeup();
     }
 }

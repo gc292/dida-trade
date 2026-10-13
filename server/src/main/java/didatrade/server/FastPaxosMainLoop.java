@@ -8,30 +8,35 @@ import didatrade.util.PhaseTwoResponseProcessor;
 import java.util.*;
 
 public final class FastPaxosMainLoop implements ConsensusLoop {
+
     private static final long RETRY_DELAY_MILLIS = 500;
-
     private final DidaTradeServerState serverState;
+    private final int windowSize;
 
-    private int     preparedBallot      = -1;
-    private int     phaseOneRetryBallot = -1;
-    private long    phaseOneRetryNotBefore;
+    // Only the coordinator thread changes proposals, attempts and retry schedules.
+    private int preparedBallot = -1;
+    private int phaseOneRetryBallot = -1;
+    private long phaseOneRetryNotBefore;
+    private int nextToOpen;
+    private int nextToExecute;
+    private final TreeSet<Integer> recoveryHoles = new TreeSet<>();
+    private final TreeMap<Integer, Integer> recoveryProposals = new TreeMap<>();
+    // An older attempt may still yield a valid certificate after leadership changes.
+    private final Map<ProposalKey, ProposalAttempt> phaseTwoAttempts = new HashMap<>();
+    private final Map<ProposalKey, Long> retryNotBefore = new HashMap<>();
+    private final Set<ProposalKey> openedInstances = new HashSet<>();
+    private int notificationBallot = -1;
+    private boolean notificationInFlight;
+    private long notificationRetryNotBefore;
+
+    // RPC callbacks only publish events under this monitor, then wake the coordinator.
     private boolean hasWork;
-    private int     nextToOpen;
+    private final Queue<Collision> collisions = new ArrayDeque<>();
+    private final Set<ProposalKey> authorizationFailures = new HashSet<>();
+    private final Queue<LeaderNotification> leaderNotifications = new ArrayDeque<>();
 
-    // FAST-07 will advance this cursor while executing the decided prefix.
-    private       int                   nextToExecute;
-    private       int                   recoveryLimit;
-    private final TreeSet<Integer>      recoveryHoles = new TreeSet<>();
-    private final Map<Integer, Integer> holeProposals = new HashMap<>();
-
-    private final Map<ProposalKey, Long> retryNotBefore  = new HashMap<>();
-    private final Set<ProposalKey>       openedInstances = new HashSet<>();
-
-    private Map<Integer, DidaTradePaxos.AcceptedEntry> recoveredEntries =
-            new HashMap<>();
-
-    private final Map<ProposalKey, ProposalAttempt> phaseTwoAttempts =
-            new HashMap<>();
+    private record Collision(int instance, int ballot) {}
+    private record LeaderNotification(int ballot, boolean acknowledged) {}
 
     private record ProposalKey(int ballot, int instance) {
     }
@@ -45,13 +50,49 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
 
 
     public FastPaxosMainLoop(DidaTradeServerState serverState) {
+        this(serverState, 1);
+    }
+
+    public FastPaxosMainLoop(DidaTradeServerState serverState, int windowSize) {
+        if (windowSize < 1) throw new IllegalArgumentException("Fast window must be positive");
         this.serverState = serverState;
+        this.windowSize = windowSize;
     }
 
     @Override
     public void run() {
-        // TODO FAST-08: event loop; every replica executes/votes, only the leader prepares/opens.
-        throw new UnsupportedOperationException("TODO FAST-08: Fast coordinator event loop");
+        wakeup(); // Prepare and open the initial window before any client request.
+        while (!Thread.currentThread().isInterrupted()) {
+            long delay = nextRetryDelayMillis();
+            synchronized (this) {
+                if (!hasWork && delay != 0) {
+                    try {
+                        if (delay < 0) wait();
+                        else wait(Math.max(1, delay));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                takeWork();
+            }
+
+            processEvents();
+            notifyNewLeader();
+            processCompletedAttempts();
+            executeDecidedPrefix();
+            int ballot = serverState.getCurrentBallot();
+            boolean prepared = prepareLeadership(ballot);
+            // Preparation may overlap Learn and completion of an older certificate.
+            processCompletedAttempts();
+            executeDecidedPrefix();
+            if (serverState.getCurrentBallot() != ballot) continue;
+            if (prepared) {
+                startRecoveredProposals(ballot);
+                openNextInstances(ballot);
+            }
+            proposePendingRequests(ballot);
+        }
     }
 
     @Override
@@ -66,20 +107,24 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
         return work;
     }
 
-    // FAST-08 uses this delay for its timed wait; -1 means no current retry.
+    // A pending RPC wakes us on completion; only dispatchable retries need a timer.
     long nextRetryDelayMillis() {
         int ballot = serverState.getCurrentBallot();
-        if (serverState.scheduler.leader(ballot) != serverState.my_id) return -1;
-
         long now   = System.currentTimeMillis();
-        long delay = Long.MAX_VALUE;
+        long delay = notificationBallot == ballot && !notificationInFlight
+                ? Math.max(0, notificationRetryNotBefore - now) : Long.MAX_VALUE;
+        if (serverState.scheduler.leader(ballot) != serverState.my_id) {
+            return delay == Long.MAX_VALUE ? -1 : delay;
+        }
         if (phaseOneRetryBallot == ballot) {
             delay = Math.max(0, phaseOneRetryNotBefore - now);
         }
         if (preparedBallot == ballot) {
             for (Map.Entry<ProposalKey, Long> retry : retryNotBefore.entrySet()) {
-                if (retry.getKey().ballot() == ballot
-                        && !serverState.paxos_log.isDecided(retry.getKey().instance())) {
+                ProposalKey key = retry.getKey();
+                if (key.ballot() == ballot
+                        && !phaseTwoAttempts.containsKey(key)
+                        && !serverState.paxos_log.isDecided(key.instance())) {
                     delay = Math.min(delay, Math.max(0, retry.getValue() - now));
                 }
             }
@@ -109,30 +154,26 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
 
         if (serverState.getCurrentBallot() != ballot) return false;
 
-        recoveredEntries    = processor.getRecoveredEntries();
+        Map<Integer, DidaTradePaxos.AcceptedEntry> recoveredEntries = processor.getRecoveredEntries();
         phaseOneRetryBallot = -1;
         retryNotBefore.clear();
-        holeProposals.clear();
+        recoveryProposals.clear();
         openedInstances.clear();
         recoveryHoles.clear();
-        recoveryLimit = nextToExecute;
+        int recoveryLimit = nextToExecute;
 
         Map<Integer, Integer> decided = serverState.paxos_log.getDecidedEntriesFrom(nextToExecute);
         for (int position : decided.keySet()) {
             recoveryLimit = Math.max(recoveryLimit, position + 1);
         }
-        Iterator<Map.Entry<Integer, DidaTradePaxos.AcceptedEntry>> entries =
-                recoveredEntries.entrySet().iterator();
-        while (entries.hasNext()) {
-            Map.Entry<Integer, DidaTradePaxos.AcceptedEntry> entry = entries.next();
-            if (entry.getKey() < nextToExecute || decided.containsKey(entry.getKey())) {
-                entries.remove();
-            } else {
-                recoveryLimit = Math.max(recoveryLimit, entry.getKey() + 1);
-            }
+        for (DidaTradePaxos.AcceptedEntry entry : recoveredEntries.values()) {
+            int position = entry.getInstance();
+            if (position < nextToExecute || decided.containsKey(position)) continue;
+            recoveryProposals.put(position, entry.getValue());
+            recoveryLimit = Math.max(recoveryLimit, position + 1);
         }
         for (int position = nextToExecute; position < recoveryLimit; position++) {
-            if (!decided.containsKey(position) && !recoveredEntries.containsKey(position)) {
+            if (!decided.containsKey(position) && !recoveryProposals.containsKey(position)) {
                 recoveryHoles.add(position);
             }
         }
@@ -142,15 +183,11 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
     }
 
     void openNextInstances(int ballot) {
-        if (preparedBallot != ballot
-                || serverState.getCurrentBallot() != ballot
-                || serverState.scheduler.leader(ballot) != serverState.my_id) {
-            return;
-        }
+        if (!isPreparedLeader(ballot)) return;
 
-        if (!recoveredEntries.isEmpty()
-                || !holeProposals.isEmpty()
-                || !recoveryHoles.isEmpty()) {
+        releaseObsoleteReservations();
+
+        if (!recoveryProposals.isEmpty() || !recoveryHoles.isEmpty()) {
             return;
         }
 
@@ -158,30 +195,12 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
             openedInstances.remove(new ProposalKey(ballot, nextToOpen));
             nextToOpen++;
         }
-        ProposalKey key = new ProposalKey(ballot, nextToOpen);
-
-        if (openedInstances.contains(key) || phaseTwoAttempts.containsKey(key)) {
-            return;
+        for (int instance = nextToOpen; instance < nextToOpen + windowSize; instance++) {
+            if (serverState.paxos_log.isDecided(instance)) continue;
+            ProposalKey key = new ProposalKey(ballot, instance);
+            if (openedInstances.contains(key) && !retryNotBefore.containsKey(key)) continue;
+            startProposal(instance, ballot, ProposalKind.ANY, null);
         }
-
-        Long retryTime = retryNotBefore.get(key);
-
-        if (retryTime != null && System.currentTimeMillis() < retryTime) {
-            return;
-        }
-
-        PhaseTwoAttempt attempt =
-                serverState.startFastAnyIfCurrentAndUndecided(nextToOpen, ballot);
-
-        if (attempt == null) {
-            return;
-        }
-
-        phaseTwoAttempts.put(key, new ProposalAttempt(ProposalKind.ANY, null, attempt));
-
-        retryNotBefore.remove(key);
-        attempt.onCompletion(this::wakeup);
-
     }
 
     void proposePendingRequests(int ballot) {
@@ -190,21 +209,10 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
             return;
         }
 
-        Set<Integer> excludedIds = new HashSet<>();
+        releaseObsoleteReservations();
 
-        excludedIds.addAll(holeProposals.values());
-
-        for (DidaTradePaxos.AcceptedEntry entry : recoveredEntries.values()) {
-            excludedIds.add(entry.getValue());
-        }
-
-        for (DidaTradePaxos.AcceptedEntry entry
-                : serverState.paxos_log.getAcceptedEntries()) {
-
-            if (!serverState.paxos_log.isDecided(entry.getInstance())) {
-                excludedIds.add(entry.getValue());
-            }
-        }
+        Set<Integer> excludedIds = new HashSet<>(recoveryProposals.values());
+        excludedIds.addAll(serverState.paxos_log.getReservedCommandIds(ballot));
 
         excludedIds.addAll(
                 serverState.paxos_log.getDecidedEntriesFrom(nextToExecute).values());
@@ -217,6 +225,12 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
             if (request == null) return;
 
             int value = request.getId();
+            try {
+                serverState.applySlowMode();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
             DidaTradeServerState.PhaseTwoAcceptorResult result =
                     serverState.acceptFastProposal(instance, ballot, value);
             if (!result.accepted()) return;
@@ -227,23 +241,14 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
     }
 
     void startRecoveredProposals(int ballot) {
-        if (preparedBallot != ballot
-                || serverState.getCurrentBallot() != ballot
-                || serverState.scheduler.leader(ballot) != serverState.my_id) {
-            return;
-        }
+        if (!isPreparedLeader(ballot)) return;
+
+        releaseObsoleteReservations();
 
         // Reserve real pending requests for holes; never manufacture a command ID.
-        Set<Integer> excludedIds = new HashSet<>(holeProposals.values());
-        for (DidaTradePaxos.AcceptedEntry entry : recoveredEntries.values()) {
-            excludedIds.add(entry.getValue());
-        }
+        Set<Integer> excludedIds = new HashSet<>(recoveryProposals.values());
         excludedIds.addAll(serverState.paxos_log.getDecidedEntriesFrom(nextToExecute).values());
-        for (DidaTradePaxos.AcceptedEntry entry : serverState.paxos_log.getAcceptedEntries()) {
-            if (!serverState.paxos_log.isDecided(entry.getInstance())) {
-                excludedIds.add(entry.getValue());
-            }
-        }
+        excludedIds.addAll(serverState.paxos_log.getReservedCommandIds(ballot, recoveryHoles));
         Iterator<Integer> holes = recoveryHoles.iterator();
         while (holes.hasNext()) {
             int position = holes.next();
@@ -253,46 +258,40 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
             }
             RequestRecord request = serverState.req_history.getFirstPendingExcluding(excludedIds);
             if (request == null) break;
-            holeProposals.put(position, request.getId());
+            recoveryProposals.put(position, request.getId());
             excludedIds.add(request.getId());
             holes.remove();
         }
 
-        TreeSet<Integer> positions = new TreeSet<>(recoveredEntries.keySet());
-        positions.addAll(holeProposals.keySet());
-        for (int instance : positions) {
-            if (serverState.paxos_log.isDecided(instance)) {
-                recoveredEntries.remove(instance);
-                holeProposals.remove(instance);
-                continue;
-            }
-            int value = recoveredEntries.containsKey(instance)
-                    ? recoveredEntries.get(instance).getValue() : holeProposals.get(instance);
-
-            ProposalKey key = new ProposalKey(ballot, instance);
-
-            if (phaseTwoAttempts.containsKey(key)) {
-                continue;
-            }
-
-            Long retryTime = retryNotBefore.get(key);
-
-            if (retryTime != null && System.currentTimeMillis() < retryTime) {
-                continue;
-            }
-
-            PhaseTwoAttempt attempt =
-                    serverState.startFastPhaseTwoIfCurrentAndUndecided(
-                            instance, ballot, value);
-
-            if (attempt == null) {
-                continue;
-            }
-
-            phaseTwoAttempts.put(key, new ProposalAttempt(ProposalKind.CONCRETE, value, attempt));
-            retryNotBefore.remove(key);
-            attempt.onCompletion(this::wakeup);
+        for (Map.Entry<Integer, Integer> proposal : recoveryProposals.entrySet()) {
+            startProposal(proposal.getKey(), ballot, ProposalKind.CONCRETE, proposal.getValue());
         }
+    }
+
+    private boolean isPreparedLeader(int ballot) {
+        return preparedBallot == ballot
+                && serverState.getCurrentBallot() == ballot
+                && serverState.scheduler.leader(ballot) == serverState.my_id;
+    }
+
+    private void startProposal(int instance, int ballot, ProposalKind kind, Integer value) {
+        ProposalKey key = new ProposalKey(ballot, instance);
+        if (phaseTwoAttempts.containsKey(key)) return;
+        Long retryTime = retryNotBefore.get(key);
+        if (retryTime != null && System.currentTimeMillis() < retryTime) return;
+
+        PhaseTwoAttempt attempt;
+        if (kind == ProposalKind.ANY) {
+            attempt = serverState.startFastAnyIfCurrentAndUndecided(instance, ballot);
+        } else {
+            attempt = serverState.startFastPhaseTwoIfCurrentAndUndecided(instance, ballot, value);
+        }
+        if (attempt == null) return;
+
+        // Register first: an already-completed attempt invokes its callback immediately.
+        phaseTwoAttempts.put(key, new ProposalAttempt(kind, value, attempt));
+        retryNotBefore.remove(key);
+        attempt.onCompletion(this::wakeup);
     }
 
     void processCompletedAttempts() {
@@ -317,9 +316,7 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
             if (!result.getAccepted()) {
                 serverState.setCurrentBallot(result.getMaxballot());
 
-                if (serverState.getCurrentBallot() == key.ballot()
-                        && preparedBallot == key.ballot()
-                        && serverState.scheduler.leader(key.ballot()) == serverState.my_id
+                if (isPreparedLeader(key.ballot())
                         && !serverState.paxos_log.isDecided(key.instance())) {
 
                     retryNotBefore.put(
@@ -331,10 +328,8 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
             }
 
             if (proposal.kind() == ProposalKind.ANY) {
-                retryNotBefore.remove(key);
-
-                if (serverState.getCurrentBallot() == key.ballot()
-                        && preparedBallot == key.ballot()
+                // Keep a retry published by a failed fifth recipient after quorum completion.
+                if (isPreparedLeader(key.ballot())
                         && !serverState.paxos_log.isDecided(key.instance())) {
                     openedInstances.add(key);
                 }
@@ -345,20 +340,14 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
             serverState.paxos_log.decideEntry(
                     key.instance(), key.ballot(), proposal.value());
 
-            recoveredEntries.remove(key.instance());
-            holeProposals.remove(key.instance());
-            recoveryHoles.remove(key.instance());
-            Iterator<ProposalKey> retries = retryNotBefore.keySet().iterator();
-            while (retries.hasNext()) {
-                if (retries.next().instance() == key.instance()) retries.remove();
-            }
-
             serverState.updateCompletedBallot(key.ballot());
-
         }
+        releaseObsoleteReservations();
     }
 
     void executeDecidedPrefix() {
+        releaseObsoleteReservations();
+
         while (true) {
             Integer commandId =
                     serverState.paxos_log.getDecidedCommandId(nextToExecute);
@@ -384,8 +373,91 @@ public final class FastPaxosMainLoop implements ConsensusLoop {
         }
     }
 
-    public void onCollision(int instance, int ballot) {
-        // TODO FAST-09: publish a collision event; transition only once from current b to b+1.
-        throw new UnsupportedOperationException("TODO FAST-09: collision handling");
+    private void releaseObsoleteReservations() {
+        Iterator<Map.Entry<Integer, Integer>> proposals = recoveryProposals.entrySet().iterator();
+        while (proposals.hasNext()) {
+            Map.Entry<Integer, Integer> proposal = proposals.next();
+            int position = proposal.getKey();
+            if (serverState.paxos_log.isDecided(position)
+                    || serverState.paxos_log.isReservationSuperseded(position, preparedBallot, proposal.getValue())) {
+                proposals.remove();
+                ProposalKey key = new ProposalKey(preparedBallot, position);
+                retryNotBefore.remove(key);
+                openedInstances.remove(key);
+            }
+        }
+        Iterator<Integer> holes = recoveryHoles.iterator();
+        while (holes.hasNext()) {
+            if (serverState.paxos_log.isDecided(holes.next())) holes.remove();
+        }
+        Iterator<ProposalKey> retries = retryNotBefore.keySet().iterator();
+        while (retries.hasNext()) {
+            if (serverState.paxos_log.isDecided(retries.next().instance())) retries.remove();
+        }
+        Iterator<ProposalKey> opened = openedInstances.iterator();
+        while (opened.hasNext()) {
+            if (serverState.paxos_log.isDecided(opened.next().instance())) opened.remove();
+        }
+    }
+
+    synchronized void onAuthorizationFailure(int instance, int ballot) {
+        authorizationFailures.add(new ProposalKey(ballot, instance));
+        wakeup();
+    }
+
+    public synchronized void onCollision(int instance, int ballot) {
+        collisions.add(new Collision(instance, ballot));
+        wakeup();
+    }
+
+    void processEvents() {
+        List<Collision> events;
+        List<LeaderNotification> replies;
+        Set<ProposalKey> failures;
+        synchronized (this) {
+            events = new ArrayList<>(collisions);
+            collisions.clear();
+            replies = new ArrayList<>(leaderNotifications);
+            leaderNotifications.clear();
+            failures = new HashSet<>(authorizationFailures);
+            authorizationFailures.clear();
+        }
+        for (Collision event : events) {
+            if (serverState.paxos_log.isDecided(event.instance())) continue;
+            if (serverState.advanceFastBallotIfCurrent(event.ballot())) {
+                notificationBallot = event.ballot() + 1;
+                notificationInFlight = false;
+                notificationRetryNotBefore = 0;
+            }
+        }
+        for (ProposalKey key : failures) {
+            if (isPreparedLeader(key.ballot()) && !serverState.paxos_log.isDecided(key.instance())) {
+                retryNotBefore.put(key, System.currentTimeMillis() + RETRY_DELAY_MILLIS);
+            }
+        }
+        for (LeaderNotification reply : replies) {
+            if (reply.ballot() != notificationBallot) continue;
+            notificationInFlight = false;
+            if (reply.acknowledged()) notificationBallot = -1;
+            else notificationRetryNotBefore = System.currentTimeMillis() + RETRY_DELAY_MILLIS;
+        }
+    }
+
+    private void notifyNewLeader() {
+        if (notificationBallot < 0) return;
+        if (notificationBallot != serverState.getCurrentBallot()
+                || serverState.scheduler.leader(notificationBallot) == serverState.my_id) {
+            notificationBallot = -1;
+            return;
+        }
+        if (notificationInFlight || System.currentTimeMillis() < notificationRetryNotBefore) return;
+        int ballot = notificationBallot;
+        notificationInFlight = true;
+        serverState.notifyFastLeader(ballot, acknowledged -> {
+            synchronized (this) {
+                leaderNotifications.add(new LeaderNotification(ballot, acknowledged));
+                wakeup();
+            }
+        });
     }
 }

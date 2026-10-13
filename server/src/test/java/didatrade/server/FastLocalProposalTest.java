@@ -20,6 +20,7 @@ public class FastLocalProposalTest extends TestCase {
     public void testFiveAcceptorsAgreeWithoutCollision() throws Exception { runIsolated("agreement"); }
     public void testIndependentLocalOrdersProduceRealFastCollision() throws Exception { runIsolated("collision"); }
     public void testSameRequestCanReachDifferentPositionsOnDifferentReplicas() throws Exception { runIsolated("positions"); }
+    public void testHigherAnyReleasesHistoricalVoteWithoutErasingAcceptedSnapshot() throws Exception { runIsolated("reopen"); }
 
     private void runIsolated(String scenario) throws Exception {
         Path output = Path.of("target", "fast-local-proposal-" + scenario + ".log");
@@ -49,6 +50,7 @@ public class FastLocalProposalTest extends TestCase {
                 case "agreement" -> checkVotes(false);
                 case "collision" -> checkVotes(true);
                 case "positions" -> checkPositions();
+                case "reopen" -> checkReopen();
                 default -> throw new IllegalArgumentException("Unknown scenario");
             }
             System.exit(0);
@@ -77,7 +79,7 @@ public class FastLocalProposalTest extends TestCase {
     }
 
     private static void checkBefore() {
-        LocalState state = new LocalState(1, ProtocolMode.CLASSIC, true);
+        LocalState state = new LocalState(1, ProtocolMode.FAST);
         RequestRecord request = pending(state, 101);
         state.loop.proposePendingRequests(0);
         assertTrue(state.notifications.isEmpty());
@@ -96,7 +98,7 @@ public class FastLocalProposalTest extends TestCase {
     }
 
     private static void checkAfter() {
-        LocalState state = new LocalState(1, ProtocolMode.CLASSIC, true);
+        LocalState state = new LocalState(1, ProtocolMode.FAST);
         assertAuthorized(any(state, 2, 0));
         assertAuthorized(any(state, 0, 0));
         state.loop.proposePendingRequests(0);
@@ -104,18 +106,24 @@ public class FastLocalProposalTest extends TestCase {
         pending(state, 101);
         state.loop.proposePendingRequests(0);
         assertEquals(List.of(new Vote(0, 0, 101, 1)), state.notifications);
-        assertEquals(2, state.paxos_log.getNextFastInstance(0, 0).intValue());
+        assertNull(state.paxos_log.getNextFastInstance(0, 0));
         pending(state, 102);
         state.loop.proposePendingRequests(0);
-        assertEquals(new Vote(2, 0, 102, 1), state.notifications.get(1));
+        assertEquals(1, state.notifications.size()); // Slot 1 has not received ANY yet.
+        assertAuthorized(any(state, 1, 0));
         state.loop.proposePendingRequests(0);
-        assertEquals(2, state.notifications.size());
+        assertEquals(new Vote(1, 0, 102, 1), state.notifications.get(1));
+        pending(state, 103);
+        state.loop.proposePendingRequests(0);
+        assertEquals(new Vote(2, 0, 103, 1), state.notifications.get(2));
+        state.loop.proposePendingRequests(0);
+        assertEquals(3, state.notifications.size());
         assertNotNull(state.req_history.getIfPending(101));
         assertNotNull(state.req_history.getIfPending(102));
     }
 
     private static void checkLoser() {
-        LocalState state = new LocalState(1, ProtocolMode.CLASSIC, true);
+        LocalState state = new LocalState(1, ProtocolMode.FAST);
         RequestRecord loser = pending(state, 101);
         assertAuthorized(any(state, 0, 0));
         state.loop.proposePendingRequests(0);
@@ -130,7 +138,7 @@ public class FastLocalProposalTest extends TestCase {
     }
 
     private static void checkPromise() {
-        LocalState state = new LocalState(1, ProtocolMode.CLASSIC, true);
+        LocalState state = new LocalState(1, ProtocolMode.FAST);
         pending(state, 101);
         assertAuthorized(any(state, 0, 0));
         state.loop.takeWork();
@@ -146,8 +154,8 @@ public class FastLocalProposalTest extends TestCase {
     }
 
     private static void checkModes() {
-        for (ProtocolMode mode : ProtocolMode.values()) {
-            LocalState state = new LocalState(0, mode, false);
+        for (ProtocolMode mode : new ProtocolMode[] {ProtocolMode.CLASSIC, ProtocolMode.MULTI}) {
+            LocalState state = new LocalState(0, mode);
             RecordingObserver rejected = any(state, 0, 10);
             assertEquals(Status.Code.FAILED_PRECONDITION, Status.fromThrowable(rejected.error).getCode());
             assertEquals(0, state.getCurrentBallot());
@@ -165,7 +173,7 @@ public class FastLocalProposalTest extends TestCase {
         PaxosLog learner = new PaxosLog();
         List<Integer> members = List.of(0, 1, 2, 3, 4);
         for (int id = 0; id < 5; id++) {
-            LocalState state = new LocalState(id, ProtocolMode.CLASSIC, true);
+            LocalState state = new LocalState(id, ProtocolMode.FAST);
             int chosen = collision && id % 2 != 0 ? 102 : 101;
             pending(state, chosen);
             assertAuthorized(any(state, 0, 0));
@@ -185,12 +193,34 @@ public class FastLocalProposalTest extends TestCase {
 
     private static void checkPositions() {
         for (int id = 0; id < 2; id++) {
-            LocalState state = new LocalState(id, ProtocolMode.CLASSIC, true);
+            LocalState state = new LocalState(id, ProtocolMode.FAST);
             pending(state, 101);
+            if (id == 1) state.paxos_log.decideEntry(0, 0, 202);
             assertAuthorized(any(state, id, 0));
             state.loop.proposePendingRequests(0);
             assertEquals(List.of(new Vote(id, 0, 101, id)), state.notifications);
         }
+    }
+
+    private static void checkReopen() {
+        LocalState state = new LocalState(1, ProtocolMode.FAST);
+        RequestRecord request = pending(state, 101);
+        assertAuthorized(any(state, 0, 0));
+        state.loop.proposePendingRequests(0);
+        assertEquals(1, state.notifications.size());
+        assertAuthorized(any(state, 0, 1));
+        assertEquals(101, state.paxos_log.getAcceptedEntries().get(0).getValue());
+        assertEquals(0, state.paxos_log.getAcceptedEntries().get(0).getValballot());
+        state.loop.proposePendingRequests(1);
+        assertEquals(List.of(new Vote(0, 0, 101, 1), new Vote(0, 1, 101, 1)), state.notifications);
+        assertSame(request, state.req_history.getIfPending(101));
+        assertEquals(1, state.paxos_log.getAcceptedEntries().get(0).getValballot());
+        assertAuthorized(any(state, 1, 1));
+        state.loop.proposePendingRequests(1);
+        assertEquals(2, state.notifications.size()); // Current vote remains a reservation.
+        pending(state, 102);
+        state.loop.proposePendingRequests(1);
+        assertEquals(new Vote(1, 1, 102, 1), state.notifications.get(2));
     }
 
     private record Vote(int position, int ballot, int value, int acceptor) { }
@@ -199,11 +229,9 @@ public class FastLocalProposalTest extends TestCase {
         private final FastPaxosMainLoop loop;
         private final List<Vote> notifications = new ArrayList<>();
 
-        private LocalState(int id, ProtocolMode mode, boolean fast) {
-            super(19000, id, 'B', mode);
-            loop = new FastPaxosMainLoop(this);
-            main_loop = loop; // Exercise handlers without starting the unfinished Fast run().
-            setFastPaxosMode(fast);
+        private LocalState(int id, ProtocolMode mode) {
+            super(19000, id, 'B', mode, false);
+            loop = mode == ProtocolMode.FAST ? (FastPaxosMainLoop) main_loop : null;
         }
 
         @Override public void notifyLearners(int position, int ballot, int value) {

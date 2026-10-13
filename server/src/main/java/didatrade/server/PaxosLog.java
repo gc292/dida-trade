@@ -34,26 +34,43 @@ public class PaxosLog {
     public synchronized boolean acceptFastProposal(int position, int ballot, int commandId) {
         PaxosInstance entry = testAndSetEntry(position);
 
-        if (entry.authorized_ballot != ballot) return false;
+        if (entry.decided || entry.authorized_ballot != ballot) return false;
 
         return accept(position, ballot, commandId);
     }
 
+    // ANY may arrive out of order: an earlier unvoted position must be handled first.
     public synchronized Integer getNextFastInstance(int ballot, int firstPosition) {
-        Integer next = null;
-
-        for (PaxosInstance entry : log.values()) {
-            if (entry.instance_nb < firstPosition) continue;
-            if (entry.decided) continue;
-            if (entry.authorized_ballot != ballot) continue;
-            if (entry.write_ballot >= ballot) continue;
-
-            if (next == null || entry.instance_nb < next) {
-                next = entry.instance_nb;
-            }
+        for (int position = firstPosition; ; position++) {
+            PaxosInstance entry = log.get(position);
+            if (entry == null) return null;
+            if (entry.decided || entry.write_ballot >= ballot) continue;
+            if (entry.authorized_ballot != ballot) return null;
+            return position;
         }
+    }
 
-        return next;
+    public synchronized Set<Integer> getReservedCommandIds(int ballot) {
+        return getReservedCommandIds(ballot, Set.of());
+    }
+
+    // Only a prepared coordinator may supply holes cleared by its recovery-quorum snapshot.
+    synchronized Set<Integer> getReservedCommandIds(int ballot, Set<Integer> recoveryHoles) {
+        Set<Integer> reserved = new HashSet<>();
+        for (PaxosInstance entry : log.values()) {
+            if (entry.decided || entry.write_ballot < 0) continue;
+            if (entry.write_ballot < ballot && recoveryHoles.contains(entry.instance_nb)) continue;
+            if (entry.authorized_ballot > entry.write_ballot
+                    && entry.authorized_ballot <= ballot) continue;
+            reserved.add(entry.accepted_command_id);
+        }
+        return reserved;
+    }
+
+    public synchronized boolean isReservationSuperseded(int position, int ballot, int commandId) {
+        PaxosInstance entry = log.get(position);
+        return entry != null && (entry.authorized_ballot > ballot
+                || (entry.write_ballot > ballot && entry.accepted_command_id != commandId));
     }
 
     public synchronized FastLearnResult recordFastLearn(int position, int ballot, int commandId, int acceptor, int quorum, List<Integer> configuredAcceptors) {
@@ -137,7 +154,7 @@ public class PaxosLog {
         return FastLearnResult.PENDING;
     }
 
-    private Hashtable<Integer, PaxosInstance>        log;
+    private final Map<Integer, PaxosInstance> log;
     private Map<Integer, Map<Integer, LearnedValue>> learnedValues;
 
     private static final class LearnedValue {
@@ -150,7 +167,7 @@ public class PaxosLog {
     }
 
     public PaxosLog() {
-        this.log           = new Hashtable<Integer, PaxosInstance>();
+        this.log           = new HashMap<>();
         this.learnedValues = new HashMap<>();
     }
 
