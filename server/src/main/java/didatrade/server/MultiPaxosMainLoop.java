@@ -11,15 +11,15 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
     private static final long RETRY_DELAY_MILLIS = 500;
 
     private final DidaTradeServerState                       server_state;
-    private       int                                        prepared_ballot   = -1;
-    private       Map<Integer, DidaTradePaxos.AcceptedEntry> recoveredEntries  = new HashMap<>();
-    private       Map<Integer, Integer>                      assignedRequests  = new HashMap<>();
-    private       Map<ProposalKey, ProposalAttempt>          phaseTwoAttempts  = new HashMap<>();
-    private       Map<ProposalKey, Long>                     retryNotBefore    = new HashMap<>();
+    private       int                                        prepared_ballot     = -1;
+    private       Map<Integer, DidaTradePaxos.AcceptedEntry> recoveredEntries    = new HashMap<>();
+    private       Map<Integer, Integer>                      assignedRequests    = new HashMap<>();
+    private       Map<ProposalKey, ProposalAttempt>          phaseTwoAttempts    = new HashMap<>();
+    private       Map<ProposalKey, Long>                     retryNotBefore      = new HashMap<>();
     private       boolean                                    has_work;
-    private       int                                        next_new_instance = 0;
-    private       int                                        next_to_execute   = 0;
-    private       TreeSet<Integer>                           holes             = new TreeSet<>();
+    private       int                                        next_new_instance   = 0;
+    private       int                                        next_to_execute     = 0;
+    private       TreeSet<Integer>                           holes               = new TreeSet<>();
     private       int                                        phaseOneRetryBallot = -1;
     private       long                                       phaseOneRetryNotBefore;
 
@@ -39,6 +39,7 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
     public void run() {
         while (true) {
             synchronized (this) {
+                retryNotBefore.keySet().removeIf(key -> server_state.paxos_log.isDecided(key.instance()));
                 while (!has_work && !retryReady()) {
                     try {
                         long retryDelay = nextRetryDelayMillis();
@@ -93,7 +94,9 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
 
         return phaseOneRetryBallot == currentBallot && phaseOneRetryNotBefore <= now
                 || retryNotBefore.entrySet().stream()
-                .anyMatch(entry -> entry.getKey().ballot() == currentBallot && entry.getValue() <= now);
+                .anyMatch(entry -> entry.getKey().ballot() == currentBallot
+                        && !server_state.paxos_log.isDecided(entry.getKey().instance())
+                        && entry.getValue() <= now);
     }
 
     private long nextRetryDelayMillis() {
@@ -104,7 +107,8 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
                 ? Math.max(0, phaseOneRetryNotBefore - now)
                 : Long.MAX_VALUE;
         long phaseTwoDelay = retryNotBefore.entrySet().stream()
-                .filter(entry -> entry.getKey().ballot() == currentBallot)
+                .filter(entry -> entry.getKey().ballot() == currentBallot
+                        && !server_state.paxos_log.isDecided(entry.getKey().instance()))
                 .mapToLong(entry -> Math.max(0, entry.getValue() - now))
                 .min()
                 .orElse(Long.MAX_VALUE);
@@ -262,7 +266,8 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
 
             if (!result.getAccepted()) {
                 server_state.setCurrentBallot(result.getMaxballot());
-                if (server_state.getCurrentBallot() == key.ballot()) {
+                if (server_state.getCurrentBallot() == key.ballot()
+                        && !server_state.paxos_log.isDecided(key.instance())) {
                     retryNotBefore.put(key, System.currentTimeMillis() + RETRY_DELAY_MILLIS);
                 }
                 continue;

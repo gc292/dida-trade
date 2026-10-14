@@ -1,10 +1,6 @@
 package didatrade.server;
 
-import didatrade.DidaTradePaxos;
-import didatrade.DidaTradeMain;
-import didatrade.DidaTradeMaster;
-import didatrade.DidaTradeMasterServiceGrpc;
-import didatrade.DidaTradePaxosServiceGrpc;
+import didatrade.*;
 import didatrade.configs.ConfigurationScheduler;
 import didatrade.core.TradeManager;
 import didatrade.util.*;
@@ -13,9 +9,9 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -25,6 +21,16 @@ import java.util.function.Supplier;
 public class DidaTradeServerState {
     public static final  int  DEFAULT_POPULATION            = 10;
     private static final long CONSENSUS_RPC_TIMEOUT_SECONDS = 2;
+    private static final long LEARN_RETRY_DELAY_MILLIS      = 250;
+    private static final long MAX_LEARN_RETRY_DELAY_MILLIS  = 2000;
+
+    private static final ScheduledExecutorService LEARN_RETRIES = Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread worker = new Thread(task, "learn-delivery-retry");
+        worker.setDaemon(true);
+        return worker;
+    });
+
+    private final        Map<Integer, LinkedHashSet<DidaTradePaxos.LearnRequest>> pendingLearns = new HashMap<>();
     int                    max_participants;
     TradeManager           trade_manager;
     ConfigurationScheduler scheduler;
@@ -39,19 +45,18 @@ public class DidaTradeServerState {
     ManagedChannel[]                                      channels;
     DidaTradePaxosServiceGrpc.DidaTradePaxosServiceStub[] async_stubs;
 
-    private int     current_ballot;
-    private int     completed_ballot;
-    private int     debug_mode;
-    private long    appliedVersion = 0;
-    private final boolean fastpaxos_on;
+    private          int     current_ballot;
+    private          int     completed_ballot;
+    private          int     debug_mode;
+    private          long    appliedVersion = 0;
+    private final    boolean fastpaxos_on;
     private volatile boolean slowMode;
     private          boolean frozen;
 
     ConsensusLoop main_loop;
     Thread        main_loop_worker;
 
-    record PhaseOneAcceptorResult(
-            boolean accepted, int maxBallot, List<DidaTradePaxos.AcceptedEntry> acceptedEntries) {
+    record PhaseOneAcceptorResult(boolean accepted, int maxBallot, List<DidaTradePaxos.AcceptedEntry> acceptedEntries) {
     }
 
     record PhaseTwoAcceptorResult(boolean accepted, int maxBallot) {
@@ -115,8 +120,7 @@ public class DidaTradeServerState {
         }
     }
 
-    public PhaseOneResponseProcessor runPhaseOne(
-            int entry_number, int ballot, int completed_ballot) {
+    public PhaseOneResponseProcessor runPhaseOne(int entry_number, int ballot, int completed_ballot) {
         List<Integer> acceptors   = this.scheduler.acceptors(ballot);
         int           n_acceptors = acceptors.size();
 
@@ -138,9 +142,7 @@ public class DidaTradeServerState {
 
         for (int i = 0; i < n_acceptors; i++) {
             CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> phase_one_observer = new CollectorStreamObserver<DidaTradePaxos.PhaseOneReply>(phase_one_collector);
-            this.async_stubs[acceptors.get(i)]
-                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                    .phaseone(phase_one_request, phase_one_observer);
+            this.async_stubs[acceptors.get(i)].withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS).phaseone(phase_one_request, phase_one_observer);
         }
 
 
@@ -166,9 +168,7 @@ public class DidaTradeServerState {
         for (int acceptor : acceptors) {
             CollectorStreamObserver<DidaTradePaxos.PhaseOneReply> observer = new CollectorStreamObserver<>(collector);
 
-            async_stubs[acceptor]
-                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                    .phaseone(request, observer);
+            async_stubs[acceptor].withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS).phaseone(request, observer);
         }
         collector.waitUntilDone();
         return processor;
@@ -179,48 +179,43 @@ public class DidaTradeServerState {
     }
 
     public PhaseTwoAttempt startFastAny(int instance, int ballot) {
-        DidaTradePaxos.PhaseTwoRequest request =
-                DidaTradePaxos.PhaseTwoRequest.newBuilder()
-                        .setInstance(instance)
-                        .setRequestballot(ballot)
-                        .setAny(true)
-                        .build();
+        DidaTradePaxos.PhaseTwoRequest request = DidaTradePaxos.PhaseTwoRequest.newBuilder().setInstance(instance).setRequestballot(ballot).setAny(true).build();
 
         return sendPhaseTwo(request, getFastQuorum(ballot));
     }
 
 
-    private PhaseTwoAttempt sendPhaseTwo(
-            DidaTradePaxos.PhaseTwoRequest request, int quorum) {
+    private PhaseTwoAttempt sendPhaseTwo(DidaTradePaxos.PhaseTwoRequest request, int quorum) {
 
         List<Integer> acceptors = scheduler.acceptors(request.getRequestballot());
 
         PhaseTwoResponseProcessor               processor = new PhaseTwoResponseProcessor(quorum);
         ArrayList<DidaTradePaxos.PhaseTwoReply> responses = new ArrayList<>();
 
-        GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> collector =
-                new GenericResponseCollector<>(responses, acceptors.size(), processor);
+        GenericResponseCollector<DidaTradePaxos.PhaseTwoReply> collector = new GenericResponseCollector<>(responses, acceptors.size(), processor);
 
         for (int acceptor : acceptors) {
-            CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> observer =
-                    new CollectorStreamObserver<>(collector) {
-                        private void authorizationFailed() {
-                            if (request.getAny() && main_loop instanceof FastPaxosMainLoop loop) {
-                                loop.onAuthorizationFailure(request.getInstance(), request.getRequestballot());
-                            }
-                        }
-                        @Override public void onNext(DidaTradePaxos.PhaseTwoReply reply) {
-                            if (!reply.getAccepted()) authorizationFailed();
-                            super.onNext(reply);
-                        }
-                        @Override public void onError(Throwable error) {
-                            authorizationFailed();
-                            super.onError(error);
-                        }
-                    };
+            CollectorStreamObserver<DidaTradePaxos.PhaseTwoReply> observer = new CollectorStreamObserver<>(collector) {
+                private void authorizationFailed() {
+                    if (request.getAny() && main_loop instanceof FastPaxosMainLoop loop) {
+                        loop.onAuthorizationFailure(request.getInstance(), request.getRequestballot());
+                    }
+                }
 
-            DidaTradePaxosServiceGrpc.DidaTradePaxosServiceStub stub = async_stubs[acceptor]
-                    .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                @Override
+                public void onNext(DidaTradePaxos.PhaseTwoReply reply) {
+                    if (!reply.getAccepted()) authorizationFailed();
+                    super.onNext(reply);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    authorizationFailed();
+                    super.onError(error);
+                }
+            };
+
+            DidaTradePaxosServiceGrpc.DidaTradePaxosServiceStub stub = async_stubs[acceptor].withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (request.getAny()) stub = stub.withWaitForReady();
             stub.phasetwo(request, observer);
         }
@@ -248,15 +243,12 @@ public class DidaTradeServerState {
     }
 
 
-    public PhaseTwoAttempt startFastPhaseTwoIfCurrentAndUndecided(
-            int instance, int ballot, int value) {
-        return startIfCurrentAndUndecided(
-                instance, ballot, () -> startFastPhaseTwo(instance, ballot, value));
+    public PhaseTwoAttempt startFastPhaseTwoIfCurrentAndUndecided(int instance, int ballot, int value) {
+        return startIfCurrentAndUndecided(instance, ballot, () -> startFastPhaseTwo(instance, ballot, value));
     }
 
     public PhaseTwoAttempt startFastAnyIfCurrentAndUndecided(int instance, int ballot) {
-        return startIfCurrentAndUndecided(
-                instance, ballot, () -> startFastAny(instance, ballot));
+        return startIfCurrentAndUndecided(instance, ballot, () -> startFastAny(instance, ballot));
     }
 
     /**
@@ -279,17 +271,61 @@ public class DidaTradeServerState {
             // System.out.println("Sending learn request: \n" + learn_request);
 
             System.out.println("Paxos acceptor: going to notify learners for entry " + instance + " with timestamp " + ballot + " request = " + learn_request);
-            ArrayList<DidaTradePaxos.LearnReply>                learn_responses = new ArrayList<DidaTradePaxos.LearnReply>();
-            GenericResponseCollector<DidaTradePaxos.LearnReply> learn_collector = new GenericResponseCollector<DidaTradePaxos.LearnReply>(learn_responses, n_targets);
             for (int i = 0; i < n_targets; i++) {
-                CollectorStreamObserver<DidaTradePaxos.LearnReply> learn_observer = new CollectorStreamObserver<DidaTradePaxos.LearnReply>(learn_collector);
-                DidaTradePaxosServiceGrpc.DidaTradePaxosServiceStub learnerStub = this.async_stubs[learners.get(i)];
-                // A startup connection failure must not permanently lose a Fast vote.
-                if (getFastPaxosMode()) learnerStub = learnerStub.withWaitForReady();
-                learnerStub.learn(learn_request, learn_observer);
+                int     learner = learners.get(i);
+                boolean start;
+                synchronized (pendingLearns) {
+                    LinkedHashSet<DidaTradePaxos.LearnRequest> queue = pendingLearns.computeIfAbsent(learner, ignored -> new LinkedHashSet<>());
+                    start = queue.add(learn_request) && queue.size() == 1;
+                }
+                if (start) sendNextLearn(learner, LEARN_RETRY_DELAY_MILLIS);
             }
             // System.out.println("Learn request completed for instance = " + instance);
         });
+    }
+
+    // One outstanding call per learner bounds retries even if its vote backlog grows.
+    private void sendNextLearn(int learner, long retryDelayMillis) {
+        DidaTradePaxos.LearnRequest request;
+        synchronized (pendingLearns) {
+            if (channels[learner].isShutdown()) {
+                pendingLearns.remove(learner);
+                return;
+            }
+            LinkedHashSet<DidaTradePaxos.LearnRequest> queue = pendingLearns.get(learner);
+            if (queue == null) return;
+            request = queue.iterator().next();
+        }
+
+        Context.current().fork().run(() -> async_stubs[learner].withWaitForReady().learn(request, new StreamObserver<>() {
+            @Override
+            public void onNext(DidaTradePaxos.LearnReply reply) {
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                synchronized (pendingLearns) {
+                    if (channels[learner].isShutdown()) {
+                        pendingLearns.remove(learner);
+                        return;
+                    }
+                }
+                long nextDelay = Math.min(retryDelayMillis * 2, MAX_LEARN_RETRY_DELAY_MILLIS);
+                LEARN_RETRIES.schedule(() -> sendNextLearn(learner, nextDelay), retryDelayMillis, TimeUnit.MILLISECONDS);
+            }
+
+            @Override
+            public void onCompleted() {
+                boolean more;
+                synchronized (pendingLearns) {
+                    LinkedHashSet<DidaTradePaxos.LearnRequest> queue = pendingLearns.get(learner);
+                    queue.remove(request);
+                    more = !queue.isEmpty();
+                    if (!more) pendingLearns.remove(learner);
+                }
+                if (more) sendNextLearn(learner, LEARN_RETRY_DELAY_MILLIS);
+            }
+        }));
     }
 
     public PhaseTwoResponseProcessor runPhaseTwo(int instance, int ballot, int value) {
@@ -302,27 +338,18 @@ public class DidaTradeServerState {
         return startPhaseTwo(instance, ballot, value, scheduler.quorum(ballot));
     }
 
-    private PhaseTwoAttempt startPhaseTwo(
-            int instance, int ballot, int value, int quorum) {
+    private PhaseTwoAttempt startPhaseTwo(int instance, int ballot, int value, int quorum) {
 
-        DidaTradePaxos.PhaseTwoRequest request =
-                DidaTradePaxos.PhaseTwoRequest.newBuilder()
-                        .setInstance(instance)
-                        .setRequestballot(ballot)
-                        .setValue(value)
-                        .build();
+        DidaTradePaxos.PhaseTwoRequest request = DidaTradePaxos.PhaseTwoRequest.newBuilder().setInstance(instance).setRequestballot(ballot).setValue(value).build();
 
         return sendPhaseTwo(request, quorum);
     }
 
-    public PhaseTwoAttempt startPhaseTwoIfCurrentAndUndecided(
-            int instance, int ballot, int value) {
-        return startIfCurrentAndUndecided(
-                instance, ballot, () -> startPhaseTwo(instance, ballot, value));
+    public PhaseTwoAttempt startPhaseTwoIfCurrentAndUndecided(int instance, int ballot, int value) {
+        return startIfCurrentAndUndecided(instance, ballot, () -> startPhaseTwo(instance, ballot, value));
     }
 
-    private synchronized PhaseTwoAttempt startIfCurrentAndUndecided(
-            int instance, int ballot, Supplier<PhaseTwoAttempt> starter) {
+    private synchronized PhaseTwoAttempt startIfCurrentAndUndecided(int instance, int ballot, Supplier<PhaseTwoAttempt> starter) {
         if (ballot != current_ballot) return null;
         return paxos_log.startIfUndecided(instance, starter);
     }
@@ -332,9 +359,7 @@ public class DidaTradeServerState {
 
         if (accepted) this.current_ballot = ballot;
 
-        List<DidaTradePaxos.AcceptedEntry> entries = accepted
-                ? this.paxos_log.getAcceptedEntries()
-                : List.of();
+        List<DidaTradePaxos.AcceptedEntry> entries = accepted ? this.paxos_log.getAcceptedEntries() : List.of();
         return new PhaseOneAcceptorResult(accepted, this.current_ballot, entries);
     }
 
@@ -400,32 +425,22 @@ public class DidaTradeServerState {
         }
     }
 
-    public DidaTradeMain.BalanceReply readCausalBalance(
-            int reqid, int userid, long minVersion) throws InterruptedException {
+    public DidaTradeMain.BalanceReply readCausalBalance(int reqid, int userid, long minVersion) throws InterruptedException {
 
         synchronized (trade_manager) {
             while (appliedVersion < minVersion) {
                 if (io.grpc.Context.current().isCancelled()) {
-                    throw io.grpc.Status.CANCELLED
-                            .withDescription("Balance cancelled while waiting")
-                            .asRuntimeException();
+                    throw io.grpc.Status.CANCELLED.withDescription("Balance cancelled while waiting").asRuntimeException();
                 }
 
                 trade_manager.wait(100);
             }
 
             if (io.grpc.Context.current().isCancelled()) {
-                throw io.grpc.Status.CANCELLED
-                        .withDescription("Balance cancelled")
-                        .asRuntimeException();
+                throw io.grpc.Status.CANCELLED.withDescription("Balance cancelled").asRuntimeException();
             }
             int balance = trade_manager.balance(userid);
-            return DidaTradeMain.BalanceReply.newBuilder()
-                    .setReqid(reqid)
-                    .setResult(balance != -1)
-                    .setBalance(balance)
-                    .setAppliedVersion(appliedVersion)
-                    .build();
+            return DidaTradeMain.BalanceReply.newBuilder().setReqid(reqid).setResult(balance != -1).setBalance(balance).setAppliedVersion(appliedVersion).build();
         }
     }
 
@@ -450,15 +465,22 @@ public class DidaTradeServerState {
     }
 
     void notifyFastLeader(int ballot, Consumer<Boolean> completion) {
-        DidaTradeMaster.NewBallotRequest request = DidaTradeMaster.NewBallotRequest.newBuilder()
-                .setNewballot(ballot).setCompletedballot(getCompletedBallot()).build();
-        DidaTradeMasterServiceGrpc.newStub(channels[scheduler.leader(ballot)])
-                .withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .newballot(request, new StreamObserver<>() {
-                    @Override public void onNext(DidaTradeMaster.NewBallotReply reply) {}
-                    @Override public void onError(Throwable error) { completion.accept(false); }
-                    @Override public void onCompleted() { completion.accept(true); }
-                });
+        DidaTradeMaster.NewBallotRequest request = DidaTradeMaster.NewBallotRequest.newBuilder().setNewballot(ballot).setCompletedballot(getCompletedBallot()).build();
+        DidaTradeMasterServiceGrpc.newStub(channels[scheduler.leader(ballot)]).withDeadlineAfter(CONSENSUS_RPC_TIMEOUT_SECONDS, TimeUnit.SECONDS).newballot(request, new StreamObserver<>() {
+            @Override
+            public void onNext(DidaTradeMaster.NewBallotReply reply) {
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                completion.accept(false);
+            }
+
+            @Override
+            public void onCompleted() {
+                completion.accept(true);
+            }
+        });
     }
 
     public synchronized int getCompletedBallot() {

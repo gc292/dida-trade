@@ -71,11 +71,11 @@ public class ConsensusRegressionTest extends TestCase {
                         .setReqid(401).setUserid(43).setQuantity(50).build()).getResult());
                 assertEquals(30, cluster.balance(replica, 501, 42));
             }
-            // A BALANCE retransmission returns its original result even after state changes.
+            // Step 4 retransmissions are fresh local reads, not cached log commands.
             for (int replica = 0; replica < 3; replica++) {
                 assertTrue(cluster.main(replica).buy(DidaTradeMain.BuyRequest.newBuilder()
                         .setReqid(601).setUserid(42).setQuantity(50).build()).getResult());
-                assertEquals(30, cluster.balance(replica, 501, 42));
+                assertEquals(15, cluster.balance(replica, 501, 42));
                 assertEquals(15, cluster.balance(replica, 701, 42));
             }
 
@@ -122,16 +122,25 @@ public class ConsensusRegressionTest extends TestCase {
             cluster.decideOnFollower(next, 601);
             assertTrue(later.get(5, TimeUnit.SECONDS));
 
-            // Decision before payload: a later BALANCE must observe the earlier ADD.
+            // Decision before payload: preserve the later-write ordering check, and
+            // make the local read explicitly depend on both first executions.
+            long before = cluster.balanceReply(2, 3000, 42, 0).getAppliedVersion();
             cluster.decideOnFollower(next + 2, 3002);
             cluster.decideOnFollower(next + 3, 3003);
-            Future<Integer> balance = cluster.submit(() -> cluster.balance(2, 3003, 81));
+            Future<Boolean> laterWrite = cluster.submit(() -> cluster.add(2, 3003, 82, 21));
+            Future<Integer> balance = cluster.submit(() ->
+                    cluster.balanceReply(2, 3004, 81, before + 2).getBalance());
             Thread.sleep(200);
+            assertFalse("Later write must wait for the earlier payload", laterWrite.isDone());
             assertFalse("Must wait for the earlier payload", balance.isDone());
             assertTrue(cluster.add(2, 3002, 81, 19));
+            assertTrue(laterWrite.get(5, TimeUnit.SECONDS));
             assertEquals(19, balance.get(5, TimeUnit.SECONDS).intValue());
-            cluster.decideOnFollower(next + 4, 3004);
-            assertEquals(15, cluster.balance(2, 3004, 42));
+            cluster.decideOnFollower(next + 4, 601); // Another duplicate log position.
+            DidaTradeMain.BalanceReply finalRead = cluster.balanceReply(2, 3005, 42, before + 2);
+            assertEquals(15, finalRead.getBalance());
+            assertEquals("Only the two fresh writes advance the version", before + 2,
+                    finalRead.getAppliedVersion());
         }
     }
 
@@ -241,10 +250,15 @@ public class ConsensusRegressionTest extends TestCase {
         }
 
         int balance(int replica, int id, int user) {
+            return balanceReply(replica, id, user, 0).getBalance();
+        }
+
+        DidaTradeMain.BalanceReply balanceReply(int replica, int id, int user, long minVersion) {
             DidaTradeMain.BalanceReply result = main(replica).balance(DidaTradeMain.BalanceRequest.newBuilder()
-                    .setReqid(id).setUserid(user).build());
+                    .setReqid(id).setUserid(user).setMinVersion(minVersion).build());
             assertTrue(result.getResult());
-            return result.getBalance();
+            assertTrue(result.getAppliedVersion() >= minVersion);
+            return result;
         }
 
         void decideOnFollower(int instance, int id) {
