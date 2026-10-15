@@ -1,111 +1,175 @@
-# DIDA Trade
+# DIDA-Trade
 
-Project developed for the **Distributed Applications Development (DAD)** course, 2026/2027.
+Distributed trading service developed for the **Distributed Applications Design (DAD)** course at **Instituto Superior Técnico**, 2026/2027. Implemented in Java with gRPC and Protocol Buffers.
 
-DIDA Trade is a distributed trading system implemented in **Java** and **gRPC**. The project explores state machine
-replication and consensus protocols based on **Paxos**, progressively extending the baseline implementation with
-Multi-Paxos, Fast Paxos, causal operations, and dynamic membership.
+## Implemented scope
 
-## Requirements
+| Step | Functionality | Deployment |
+|---|---|---|
+| 1 | Classic Paxos: Phase 1 and Phase 2 per log position | Schedule A, 3 replicas |
+| 2 | Multi-Paxos: preparation per ballot and overlapping Phase 2 instances | Schedule A, 3 replicas |
+| 3 | Fast Paxos: direct acceptor voting, ANY authorization and collision recovery | Schedule B, 5 replicas |
+| 4 | Causally consistent local `BALANCE`, bypassing consensus | All supported modes |
+| 5 | Dynamic membership and log-based state transfer using Multi-Paxos | Schedule C, 7 replicas; partial assignment implementation |
 
-The development environment uses:
+Schedule B uses five acceptors following the instructor's clarification. Fast decisions and recovery require four acceptors.
 
-* Java 22
-* Maven 3.8.4
-* Protocol Buffers Compiler (`protoc`) 3.12.0
-* gRPC Java
+**Step 5 limitations:** Schedule C runs conventional Multi-Paxos throughout, including ballots marked Fast in the schedule. Mixed Fast/conventional reconfiguration and historical quorum retirement are not implemented.
 
-The repository includes a development environment under:
+## Requirements and build
 
-```text
-dev_env/
-```
+The supplied development setup targets **Linux x86-64**, including Linux under WSL:
 
-Load it from the repository root before compiling or running the project:
+- Java 22
+- Maven 3.8.4
+- Protocol Buffers compiler 3.12.0
 
-```bash
-source dev_env/env.sh
-```
-
-> The provided environment is configured for Linux x86-64. Paths and platform-specific dependencies may need to be
-> adjusted when running on another operating system or CPU architecture.
-
-## Project Structure
-
-The project is organized as a multi-module Maven project:
-
-```text
-DIDA-Trade/
-├── app/        # Transaction client
-├── configs/    # Replica configurations and schedules
-├── console/    # Administrative console
-├── contract/   # Protocol Buffer and gRPC contracts
-├── core/       # Trading domain and state machine logic
-├── server/     # Replicas and Paxos implementation
-├── util/       # Shared utilities and RPC response processing
-├── scripts/    # Linux/WSL setup and launch scripts
-├── dev_env/    # Development environment
-└── Docs/       # Project documentation and specification
-```
-
-### Main Components
-
-**Server**
-
-Runs a replica of the distributed trading system. Replicas participate in the consensus protocol and execute decided
-operations against their local state.
-
-**App**
-
-Interactive client used to submit trading operations to the replicated system.
-
-**Console**
-
-Administrative interface used to control replicas, initiate ballots, activate replicas, and enable debugging behavior.
-
-### Supporting Modules
-
-* `contract` — `.proto` definitions and generated Java/gRPC interfaces.
-* `configs` — replica membership, leaders, quorums, ballots, and configuration schedules.
-* `core` — users, balances, stocks, orders, and trade matching.
-* `util` — common utilities and asynchronous RPC response processing.
-
-## Building
-
-From the repository root:
+From the repository root, install the local tools if needed:
 
 ```bash
+bash scripts/setup_env.sh
 source dev_env/env.sh
 mvn clean install
 ```
 
-This builds the complete multi-module project and generates the required Protocol Buffers and gRPC classes.
+The setup script installs tools into `dev_env/` and generates `env.sh` with paths for the current checkout. Run it again after moving the repository if those paths are stale. Alternatively, use a compatible existing Java/Maven environment. The protobuf/gRPC executable configuration in `contract/pom.xml` targets Linux x86-64.
 
-### Platform-specific protobuf configuration
+`mvn clean install` builds all modules, generates gRPC classes and runs the automated tests. Build the complete reactor before running components or server-only tests, since some integration tests also launch the production client.
 
-The `contract` module depends on platform-specific Protocol Buffers and gRPC executables.
+## Running locally
 
-The repository provides configurations for the supported development environments. Make sure that `contract/pom.xml`
-references binaries compatible with your operating system and CPU architecture before compiling.
-
-The current development configuration targets **Linux x86-64**.
-
-## Helper Scripts (Linux / WSL)
-
-From the repository root, install the development tools if needed:
+Start each component in a **separate terminal**. Load the environment from the repository root before changing into a module:
 
 ```bash
-bash scripts/setup_env.sh
+source dev_env/env.sh
 ```
 
-The tools are installed into the repository's `dev_env/` directory. Both scripts
-resolve paths relative to their own location, regardless of the current directory.
-On Windows, run them inside WSL; they are also usable directly on Linux.
+Use the same schedule and base port for every component in a deployment, and the same protocol mode for every replica. The server listens on **base port + replica ID**; for example, replica 2 uses port 9002 when the base port is 9000.
 
-Build and start each component in a separate terminal:
+### 1. Start the replicas
+
+From `server/`:
+
+```bash
+mvn exec:java -Dexec.args="<base-port> <replica-id> <schedule> <protocol>"
+```
+
+| Deployment | Schedule | Protocol | Replica IDs | Example: replica 0 |
+|---|---|---|---|---|
+| Classic Paxos | A | `classic` | 0–2 | `9000 0 A classic` |
+| Multi-Paxos | A | `multi` | 0–2 | `9000 0 A multi` |
+| Fast Paxos | B | `fast` | 0–4 | `9000 0 B fast` |
+| Dynamic membership | C | `multi` | 0–6 | `9000 0 C multi` |
+
+For example, start Schedule A/Multi in three terminals:
+
+```bash
+# Terminal 1, from server/
+mvn exec:java -Dexec.args="9000 0 A multi"
+
+# Terminal 2, from server/
+mvn exec:java -Dexec.args="9000 1 A multi"
+
+# Terminal 3, from server/
+mvn exec:java -Dexec.args="9000 2 A multi"
+```
+
+The protocol argument defaults to `classic` when omitted. Fast mode requires Schedule B. For Schedule C, explicitly select `multi` and start all seven processes; the acceptor membership changes with the ballot, while all seven nodes are learners.
+
+### 2. Start the client
+
+From `app/`:
+
+```bash
+mvn exec:java -Dexec.args="1 localhost 9000 A"
+```
+
+Arguments are `<client-id> <host> <base-port> <schedule>`. Replace `A` with `B` or `C` to match the servers. Concurrent clients must use distinct IDs in **1–99**. Do not reuse a client ID with a reset sequence while replicas retain its earlier requests.
+
+| Command | Purpose |
+|---|---|
+| `populate <n>` | Populate users through the replicated state machine |
+| `add <uid> <wallet> <stock>` | Create a user |
+| `buy <uid> <percentage>` | Submit a buy order using a percentage of the user's wallet |
+| `sell <uid> <percentage>` | Submit a sell order using a percentage of the user's stock |
+| `balance <uid>` | Read a local balance after satisfying the client's causal dependency |
+| `show` | Submit a replicated state-dump command |
+| `loopbuy`, `loopsell`, `looprandom` | Generate repeated operations |
+| `lenght <n>` | Set the number of loop operations; spelling matches the implementation |
+| `help`, `exit` | Display help or close the client |
+
+The loop command names above match the dispatcher; the client's built-in help currently lists different names for those three commands.
+
+For a small interactive example:
+
+```text
+add 20 100 100
+add 21 100 100
+sell 20 50
+buy 21 50
+balance 20
+balance 21
+```
+
+### 3. Start the administrative console
+
+From `console/`:
+
+```bash
+mvn exec:java -Dexec.args="localhost 9000 A"
+```
+
+Arguments are `<host> <base-port> <schedule>`; use the same schedule as the deployment.
+
+| Command | Purpose |
+|---|---|
+| `ballot <number> <replica-id>` | Request a ballot at the selected replica |
+| `activate <replica-id>` | Send the existing activation RPC |
+| `debug <mode> <replica-id>` | Change a replica's debug behavior |
+| `debug help` | Explain debug modes |
+| `help`, `exit` | Display help or close the console |
+
+Ballot numbers must follow the schedule's leader mapping:
+
+| Ballot | Schedule A leader | Schedule B leader | Schedule C leader |
+|---|---|---|---|
+| 0 | 0 | 0 | 0 |
+| 1 | 1 | 1 | 1 |
+| 2 | 2 | 2 | 3 |
+| 3 | 0 | 0 | 4 |
+| 4 | 1 | 1 | 5 |
+
+For example, after starting all seven Schedule C replicas, use the C console to request the new configuration's ballot:
+
+```text
+ballot 2 3
+```
+
+C changes acceptors from `{0,1,2,3,4}` in ballots 0–1 to `{2,3,4,5,6}` from ballot 2. Preparation still requires a quorum from each relevant historical configuration; a majority of the seven-node union alone is insufficient.
+
+### Debug modes
+
+| Mode | Behavior |
+|---|---|
+| 1 | Crash the replica process |
+| 2 | Freeze the replica |
+| 3 | Unfreeze the replica |
+| 4 | Enable artificial request delay, randomly 100–1000 ms |
+| 5 | Disable artificial delay |
+
+Crashing a replica terminates it; restarting does not restore durable state. Freeze/unfreeze is the appropriate mechanism for temporary pauses in recovery demonstrations.
+
+### Launcher shortcuts
+
+The helper loads the environment automatically and runs one process in the current terminal:
 
 ```bash
 bash scripts/run.sh build
+```
+
+For Schedule A/Classic, run each of these separately:
+
+```bash
 bash scripts/run.sh s0
 bash scripts/run.sh s1
 bash scripts/run.sh s2
@@ -113,243 +177,59 @@ bash scripts/run.sh cliente
 bash scripts/run.sh consola
 ```
 
-The launcher loads `dev_env/env.sh` automatically and uses Schedule A, base port
-9000, and client ID 1. Each command runs in the current terminal.
+For Schedule C/Multi, use `c0` through `c6`, `clienteC` and `consolaC`. All shortcuts use base port 9000 and clients use ID 1. Use the explicit Maven commands for Schedule A/Multi or Schedule B/Fast.
 
-## Running the System
+## Architecture
 
-The current deployment assumes that all components run on the same physical machine.
+| Module | Responsibility |
+|---|---|
+| `app` | Client broadcasts, request IDs and observed causal watermark |
+| `configs` | Schedule membership, leaders and quorum policies |
+| `console` | Administrative and debug commands |
+| `contract` | Protocol Buffers definitions and generated gRPC interfaces |
+| `core` | Users, wallets, stock and FIFO order matching |
+| `server` | RPC services, three separate consensus coordinators, replicated log and execution |
+| `util` | Shared RPC collectors, response processors and asynchronous attempt handling |
 
-With **Schedule A**, the system consists of three replicas.
+Classic, Multi and Fast keep independent coordinator loops. They share canonical request tracking, accepted/decided log state, learner processing and domain execution.
 
-Start the servers before starting clients.
+Clients broadcast command payloads, while consensus orders request IDs. A replica executes only the contiguous decided prefix and waits for missing payloads. Previously executed IDs do not execute again or advance the causal version. Learn delivery retries preserve the original vote and use bounded exponential backoff, with one active delivery per destination.
 
-### Servers
+`BALANCE` uses the client's maximum observed version as a dependency. The replica waits until it has applied that history, then reads balance and version under the same domain-state lock. This supports causal reads across replicas without requiring the globally freshest state.
 
-From the `server/` directory:
+Schedule C transfers decided log entries with their payloads through the normal executor. Terminal transfer failures are retried, and later decisions or payload availability can extend the transferable prefix. Transfers currently resend complete prefixes rather than deltas.
 
-```bash
-mvn exec:java -Dexec.args="{port} {id} {scheduler} [classic|multi|fast]"
-```
+## Validation
 
-Arguments:
+The last fully recorded root build passed **117 tests**, with no failures, errors or skipped tests. Coverage includes:
 
-* `{port}` — base port shared by all replicas.
-* `{id}` — replica identifier, starting at `0`.
-* `{scheduler}` — configuration schedule (`A` for the initial configuration).
-* Protocol mode is optional and defaults to `classic`; use `fast` with Schedule B.
+- Log and canonical request-history invariants.
+- Classic and Multi consensus, recovery and ordered execution.
+- Fast authorization, voting, collisions and finite-case recovery checks.
+- Learn transport-failure recovery and Multi stale-retry regressions.
+- Causal dependencies, cancellation and balance/version snapshots.
+- State-transfer retries, late prefix growth, duplicate replay, freeze/unfreeze and seven-replica reconfiguration.
 
-Step 2 implements Multi-Paxos with Schedule A. The `multi` mode performs Phase 1
-once per ballot, recovers previously accepted values by log position, and allows
-multiple Phase 2 instances to overlap without waiting for earlier instances to decide.
-Decisions may be learned out of order, while commands are executed strictly in log
-order. Leader changes recover accepted values through Phase 1, and failed Phase 1 or
-Phase 2 attempts are retried without busy-waiting.
+The suite combines unit, integration, real-gRPC and fault-injection tests. Passing it is evidence for the exercised scenarios, not a formal proof or a performance benchmark.
 
-The `classic` mode remains available and runs the original per-instance Paxos protocol.
-Existing `scripts/run.sh s0`, `s1`, and `s2` commands select Classic with Schedule A.
-To run Multi-Paxos directly, pass `multi` as the optional protocol argument.
-
-Step 3 provides Fast Paxos using `B fast`: start five replicas with IDs `0` to `4`.
-Fast decisions and recovery require four acceptors. The leader prepares each ballot
-and opens a window of four positions with ANY; acceptors vote directly on pending client
-requests. Proven collisions automatically start the next ballot and notify its leader.
-Timeouts retry the current ballot without triggering an election. Losing requests retain
-their arrival priority, and execution waits for the decided prefix and command payload.
-Fast mode requires Schedule B. In this mode, the console's new-ballot reply acknowledges
-the change immediately; its completed-ballot field still reports actual decisions.
-
-```bash
-# Run each replica in a separate terminal, from server/ with the environment loaded.
-mvn exec:java -Dexec.args="9000 0 B fast"
-# Repeat with IDs 1, 2, 3 and 4; configure clients and console with Schedule B.
-```
-
-The actual port used by a replica is:
-
-```text
-port + id
-```
-
-For example, using base port `9000`:
-
-```text
-Replica 0 -> 9000
-Replica 1 -> 9001
-Replica 2 -> 9002
-```
-
-### Client
-
-From the `app/` directory:
-
-```bash
-mvn exec:java -Dexec.args="{id} {host} {port} {scheduler}"
-```
-
-Arguments:
-
-* `{id}` — client identifier, starting at `1`.
-* `{host}` — host where the replicas are running (`localhost` for local execution).
-* `{port}` — base replica port.
-* `{scheduler}` — configuration schedule.
-
-The client provides an interactive terminal for issuing operations against the trading system.
-
-Use:
-
-```text
-help
-```
-
-to display the available commands.
-
-Use:
-
-```text
-exit
-```
-
-to terminate the client gracefully.
-
-### Console
-
-From the `console/` directory:
-
-```bash
-mvn exec:java -Dexec.args="{host} {port} {scheduler}"
-```
-
-Arguments:
-
-* `{host}` — host where the replicas are running.
-* `{port}` — base replica port.
-* `{scheduler}` — configuration schedule.
-
-The console provides administrative commands for controlling the distributed system.
-
-Examples include:
-
-```text
-help
-ballot <ballot_number> <server>
-debug <mode> <replica_id>
-exit
-```
-
-Use `help` for the complete list of commands supported by the current implementation.
-
-## Quick Start
-
-The following example starts a complete local deployment using **Schedule A** and base port `9000`.
-
-First, build the project:
+Run the complete validation from the repository root:
 
 ```bash
 source dev_env/env.sh
 mvn clean install
 ```
 
-Then open separate terminals for each component.
+## Known limitations
 
-### Server 0
+- Schedule C does not execute Fast ballots and does not retire historical quorum dependencies.
+- State is in memory: durable restart recovery, checkpoints and log compaction are not implemented.
+- Correctness assumes non-Byzantine peers, stable request identities, eventual command-payload availability and usable quorums. Classic/Multi leader changes are requested administratively; Fast additionally advances ballots on proven collisions.
+- Delivery retries address terminal RPC failures. A call that never completes still depends on eventual transport progress or unfreezing the receiver.
+- Two inherited domain limitations remain: `populate` does not reinitialize existing users, and percentage calculations can overflow for large integer balances or stock values. Startup creates users 0–9 with wallet and stock 10.
+- No comparative latency or throughput measurements are claimed.
 
-```bash
-source dev_env/env.sh
-cd server
-mvn exec:java -Dexec.args="9000 0 A"
-```
+## Authors
 
-### Server 1
-
-```bash
-source dev_env/env.sh
-cd server
-mvn exec:java -Dexec.args="9000 1 A"
-```
-
-### Server 2
-
-```bash
-source dev_env/env.sh
-cd server
-mvn exec:java -Dexec.args="9000 2 A"
-```
-
-### Client
-
-```bash
-source dev_env/env.sh
-cd app
-mvn exec:java -Dexec.args="1 localhost 9000 A"
-```
-
-### Console
-
-```bash
-source dev_env/env.sh
-cd console
-mvn exec:java -Dexec.args="localhost 9000 A"
-```
-
-## Debugging
-
-The console can configure debugging behavior on individual replicas using:
-
-```text
-debug <mode> <replica_id>
-```
-
-The currently implemented modes are:
-
-| Mode | Behavior                 |
-|-----:|--------------------------|
-|  `1` | Crash replica            |
-|  `2` | Freeze replica           |
-|  `3` | Unfreeze replica         |
-|  `4` | Enable artificial delay  |
-|  `5` | Disable artificial delay |
-
-Artificial delay introduces a random delay between **100 ms and 1000 ms** when processing requests.
-
-These modes are useful for testing the behavior of the distributed protocol under replica failures, delayed
-communication, and partial availability.
-
-## Code Formatting
-
-The root `.editorconfig` defines the formatting rules shared by the team.
-
-Among other settings, it defines:
-
-* UTF-8 encoding
-* LF line endings
-* Four spaces per indentation level
-* Java field alignment
-* Consecutive assignment alignment
-
-The `.editorconfig` file should remain version-controlled so that all contributors use the same formatting rules.
-
-### IntelliJ IDEA
-
-Enable EditorConfig support under:
-
-```text
-Settings > Editor > Code Style > Enable EditorConfig support
-```
-
-To format code manually:
-
-```text
-Code > Reformat Code
-```
-
-Automatic formatting on save can optionally be enabled under:
-
-```text
-Tools > Actions on Save > Reformat code
-```
-
-Some `ij_java_*` options are specific to IntelliJ IDEA or compatible JetBrains formatters. Other editors may only apply
-the standard EditorConfig properties.
-
-Formatting rules affect source-code formatting only; they do not introduce additional linting or Maven validation.
+- Guilherme Caria — 121557
+- Filipe Mesquita — 103531
+- Sarthak Joshi — 119818

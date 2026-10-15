@@ -22,6 +22,7 @@ public class VerticalPhaseOneQuorumTest extends TestCase {
         ConfigurationScheduler    scheduler = new ConfigurationScheduler('C');
         PhaseOneResponseProcessor processor = new PhaseOneResponseProcessor(scheduler, 0, 2);
 
+        // Four replies still contain only two members of the old configuration.
         assertFalse(answer(processor, 3, 4, 5, 6));
         assertFalse(processor.getAccepted());
     }
@@ -38,6 +39,7 @@ public class VerticalPhaseOneQuorumTest extends TestCase {
         ConfigurationScheduler    scheduler = new ConfigurationScheduler('C');
         PhaseOneResponseProcessor processor = new PhaseOneResponseProcessor(scheduler, 0, 3);
 
+        // The overlap alone supplies three members of each configuration.
         assertTrue(answer(processor, 2, 3, 4));
         assertTrue(processor.getAccepted());
     }

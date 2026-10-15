@@ -75,9 +75,11 @@ public class CausalBalanceTest extends TestCase {
             assertTrue(second.get(8, TimeUnit.SECONDS).getResult());
             await("follower knows decision but has no payload", () -> c.states[2].paxos_log.isDecided(0));
             assertEquals(0L, c.states[2].getAppliedVersion());
+            // Reuse the same scenario for write-to-read and read-to-read dependencies.
             long dependency = observedRead ? c.read(0, 201, 0).getAppliedVersion() : write.getAppliedVersion();
             assertEquals(1L, dependency);
             Future<DidaTradeMain.BalanceReply> read = c.pool.submit(() -> c.read(2, 301, dependency));
+            // Establish handler entry before checking that the read remains blocked.
             await("causal read handler entered", () -> c.probes[2].readsEntered.get() == 1);
             Thread.sleep(150);
             assertFalse("Unfrozen lagging replica must wait for dependency", read.isDone());
@@ -96,6 +98,7 @@ public class CausalBalanceTest extends TestCase {
         try (Cluster c = new Cluster(ProtocolMode.MULTI, true)) {
             for (Future<DidaTradeMain.AddUserReply> reply : c.addAll(101, 1000))
                 assertTrue(reply.get(8, TimeUnit.SECONDS).getResult());
+            // Each unique execution has one expected wallet/version pair.
             Map<Long, Integer> expected = Map.of(1L, 1000, 2L, 500, 3L, 250, 4L, 125, 5L, 63, 6L, 32, 7L, 16);
             Future<?> writer = c.pool.submit(() -> {
                 try {

@@ -76,6 +76,7 @@ public class MultiRetryRegressionTest extends TestCase {
             };
             for (int id = 0; id < c.states.length; id++)
                 c.states[0].async_stubs[id] = c.states[0].async_stubs[id].withInterceptors(deadlines);
+            // Learn decides before the suppressed Phase 2 replies hit their deadlines.
             DidaTradeMain.AddUserReply result = c.add(0, 101, 40);
             assertTrue(result.getResult());
             await("all Phase 2 accepts happened", () -> suppressedReplies.get() == 3);

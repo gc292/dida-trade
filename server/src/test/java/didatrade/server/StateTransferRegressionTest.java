@@ -111,6 +111,7 @@ public class StateTransferRegressionTest extends TestCase {
                 if (!call.getMethodDescriptor().getFullMethodName().endsWith("/statetransfer") || !loseAck.getAndSet(false))
                     return next.startCall(call, headers);
                 return next.startCall(new ForwardingServerCall.SimpleForwardingServerCall<>(call) {
+                    // Apply the transfer normally, but make its acknowledgement fail.
                     @Override public void sendMessage(Resp response) { }
                     @Override public void close(Status status, Metadata trailers) {
                         super.close(Status.UNAVAILABLE.withDescription("lost transfer ACK"), trailers);
@@ -123,6 +124,7 @@ public class StateTransferRegressionTest extends TestCase {
             await("receiver applied before lost ACK", () -> c.states[6].getAppliedVersion() == 1);
             c.seed(1, 201, 43, 25);
             List<Future<?>> calls = new ArrayList<>();
+            // Concurrent offers must share one delivery and coalesce prefix growth.
             for (int i = 0; i < 32; i++) calls.add(c.pool.submit(() -> c.states[3].state_transfer.sendDecidedLog(2)));
             for (Future<?> call : calls) call.get(3, TimeUnit.SECONDS);
             await("retry uses latest prefix", () -> c.states[6].getAppliedVersion() == 2);

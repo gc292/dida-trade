@@ -4,9 +4,7 @@ import junit.framework.TestCase;
 
 import java.util.List;
 
-import static didatrade.server.PaxosLog.FastLearnResult.COLLISION;
-import static didatrade.server.PaxosLog.FastLearnResult.DECIDED;
-import static didatrade.server.PaxosLog.FastLearnResult.PENDING;
+import static didatrade.server.PaxosLog.FastLearnResult.*;
 
 public class FastLearnerTest extends TestCase {
     private static final List<Integer> ACCEPTORS = List.of(0, 1, 2, 3, 4);
@@ -122,15 +120,16 @@ public class FastLearnerTest extends TestCase {
     public void testAllFiveAcceptorSnapshotsAgreeWithDecisionAndCollisionRules() {
         // Each acceptor has no vote, X or Y: all 3^5 snapshots, including prefixes.
         for (int snapshot = 0; snapshot < 243; snapshot++) {
-            PaxosLog log = new PaxosLog();
-            int encoded = snapshot;
-            int x = 0;
-            int y = 0;
+            PaxosLog log     = new PaxosLog();
+            int      encoded = snapshot;
+            int      x       = 0;
+            int      y       = 0;
             for (int id = 0; id < 5; id++) {
                 int value = encoded % 3;
                 encoded /= 3;
                 if (value == 0) continue;
-                if (value == 1) x++; else y++;
+                if (value == 1) x++;
+                else y++;
                 PaxosLog.FastLearnResult result = vote(log, 1, value, id);
                 if (Math.max(x, y) >= 4) {
                     assertEquals(DECIDED, result);
