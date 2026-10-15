@@ -73,11 +73,22 @@ public class PhaseOneResponseProcessor extends GenericResponseProcessor<DidaTrad
             this.valballot = last_response.getValballot();
         }
 
-        if (this.acceptedReplicas.size() >= this.scheduler.recoveryQuorum(this.high_ballot)) {
+        if (hasQuorumInEveryConfiguration()) {
             this.accepted = true;
             return true;
         }
 
         return false;
+    }
+
+    private boolean hasQuorumInEveryConfiguration() {
+        for (int ballot = this.low_ballot; ballot <= this.high_ballot; ballot++) {
+            int answered = 0;
+            for (int acceptor : this.scheduler.acceptors(ballot)) {
+                if (this.acceptedReplicas.contains(acceptor)) answered++;
+            }
+            if (answered < this.scheduler.recoveryQuorum(ballot)) return false;
+        }
+        return true;
     }
 }

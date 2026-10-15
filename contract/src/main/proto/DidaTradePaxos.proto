@@ -55,10 +55,31 @@ message LearnReply {
     int32 ballot = 2;
 }
 
+message DecidedEntry {
+    int32 instance = 1;
+    int32 ballot   = 2;
+    int32 reqid    = 3;
+    int32 action   = 4;
+    int32 userid   = 5;
+    int32 quantity = 6;
+    int32 stock    = 7;
+}
+
+message StateTransferRequest {
+    int32 ballot   = 1;
+    int32 serverid = 2;
+    repeated DecidedEntry entries = 3;
+}
+
+message StateTransferReply {
+    int32 filled_count = 1;
+}
+
 service DidaTradePaxosService {
-    rpc phaseone (PhaseOneRequest) returns (PhaseOneReply);
-    rpc phasetwo (PhaseTwoRequest) returns (PhaseTwoReply);
-    rpc learn    (LearnRequest)    returns (LearnReply);
+    rpc phaseone      (PhaseOneRequest)      returns (PhaseOneReply);
+    rpc phasetwo      (PhaseTwoRequest)      returns (PhaseTwoReply);
+    rpc learn         (LearnRequest)         returns (LearnReply);
+    rpc statetransfer (StateTransferRequest) returns (StateTransferReply);
 }
 
 

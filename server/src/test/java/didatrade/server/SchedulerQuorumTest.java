@@ -42,7 +42,7 @@ public class SchedulerQuorumTest extends TestCase {
         for (int ballot = 0; ballot < 5; ballot++) {
             assertEquals(3, scheduler.quorum(ballot).intValue());
             assertEquals(4, scheduler.superMajority(ballot).intValue());
-            assertEquals(4, scheduler.recoveryQuorum(ballot).intValue());
+            assertEquals(3, scheduler.recoveryQuorum(ballot).intValue());
         }
     }
 

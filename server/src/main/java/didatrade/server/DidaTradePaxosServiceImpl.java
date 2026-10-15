@@ -139,4 +139,16 @@ public class DidaTradePaxosServiceImpl extends DidaTradePaxosServiceGrpc.DidaTra
         responseObserver.onCompleted();
     }
 
+    @Override
+    public void statetransfer(DidaTradePaxos.StateTransferRequest request, StreamObserver<DidaTradePaxos.StateTransferReply> responseObserver) {
+        if (!this.server_state.beforeRequest(responseObserver)) {
+            return;
+        }
+
+        int filledCount = this.server_state.state_transfer.fillMissingEntries(request);
+
+        responseObserver.onNext(DidaTradePaxos.StateTransferReply.newBuilder().setFilledCount(filledCount).build());
+        responseObserver.onCompleted();
+    }
+
 }

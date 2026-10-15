@@ -173,6 +173,7 @@ public class MultiPaxosMainLoop implements ConsensusLoop {
 
         }
         prepared_ballot = ballot;
+        server_state.state_transfer.sendDecidedLog(ballot);
         return true;
     }
 

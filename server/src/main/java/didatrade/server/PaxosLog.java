@@ -235,6 +235,11 @@ public class PaxosLog {
         return entry.command_id;
     }
 
+    public synchronized int getDecisionBallot(int position) {
+        PaxosInstance entry = this.log.get(position);
+        return entry == null ? -1 : entry.decision_ballot;
+    }
+
     public synchronized void decideEntry(int position, int ballot, int commandId) {
         PaxosInstance entry = this.log.get(position);
 
