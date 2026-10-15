@@ -5,6 +5,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
     echo "Uso: bash scripts/run.sh {s0|s1|s2|cliente|consola|build}"
+    echo "     bash scripts/run.sh {c0|c1|c2|c3|c4|c5|c6|clienteC|consolaC}   (Schedule C, Multi-Paxos)"
     echo "Executa um processo no terminal atual (Linux ou WSL)."
 }
 
@@ -19,6 +20,9 @@ case "$1" in
     s2) module=server; args="9000 2 A" ;;
     cliente) module=app; args="1 localhost 9000 A" ;;
     consola) module=console; args="localhost 9000 A" ;;
+    c[0-6]) module=server; args="9000 ${1#c} C multi" ;;
+    clienteC) module=app; args="1 localhost 9000 C" ;;
+    consolaC) module=console; args="localhost 9000 C" ;;
     build) module=.; args= ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;

@@ -38,6 +38,7 @@ public class DidaTradeServerState {
     int                    my_id;
     RequestHistory         req_history;
     PaxosLog               paxos_log;
+    StateTransfer          state_transfer;
 
     List<Integer>                                         all_participants;
     int                                                   n_participants;
@@ -81,6 +82,7 @@ public class DidaTradeServerState {
         this.completed_ballot = -1;
         this.req_history      = new RequestHistory();
         this.paxos_log        = new PaxosLog();
+        this.state_transfer   = new StateTransfer(this, schedule == 'C');
         this.slowMode         = false;
         this.frozen           = false;
 
@@ -121,7 +123,9 @@ public class DidaTradeServerState {
     }
 
     public PhaseOneResponseProcessor runPhaseOne(int entry_number, int ballot, int completed_ballot) {
-        List<Integer> acceptors   = this.scheduler.acceptors(ballot);
+        int           low_ballot  = 0;
+        int           high_ballot = ballot;
+        List<Integer> acceptors   = this.scheduler.acceptorsinrange(low_ballot, high_ballot);
         int           n_acceptors = acceptors.size();
 
         DidaTradePaxos.PhaseOneRequest.Builder phase_one_request_builder = DidaTradePaxos.PhaseOneRequest.newBuilder();
@@ -130,10 +134,6 @@ public class DidaTradeServerState {
 
         DidaTradePaxos.PhaseOneRequest phase_one_request = phase_one_request_builder.build();
         System.out.println("Going to send phase 1" + phase_one_request);
-
-        int low_ballot  = Math.max(completed_ballot, 0);
-        int high_ballot = ballot;
-
 
         PhaseOneResponseProcessor phase_one_processor = new PhaseOneResponseProcessor(this.scheduler, low_ballot, high_ballot);
 
